@@ -1,0 +1,26 @@
+# Python / збірка
+__pycache__/
+*.pyc
+build/
+dist/
+
+# локальне
+.claude/
+_old/
+task.txt
+*.log
+
+# робочі дані (не код)
+png/
+png_bc/
+png_shoes/
+png_shoes_test/
+downloaded-images/
+обкладинки*/
+обклад_год/
+_backups/
+3/
+*.xlsx
+*.txt
+!requirements.txt
+810х853_2.jpg

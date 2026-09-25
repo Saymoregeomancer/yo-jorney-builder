@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="uk" data-theme="dark" class="preload">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Yo Journey Builder</title>
+    <link rel="stylesheet" href="style.css" />
+    <script>
+      // тема до першого рендера, щоб не блимало
+      try {
+        const t = new URLSearchParams(location.search).get("theme") || localStorage.getItem("theme");
+        if (t) document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <script type="text/javascript" src="/eel.js"></script>
+  </head>
+
+  <body>
+    <div class="glow glow-a"></div>
+    <div class="glow glow-b"></div>
+
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo">YJ</div>
+        <div>
+          <h1>Yo Journey Builder</h1>
+          <p class="muted">Фото → PNG → обкладинки 810×853</p>
+        </div>
+      </div>
+
+      <div class="topbar-actions">
+        <div class="tip-wrap">
+          <button class="ghost icon-btn" type="button" aria-describedby="structureTip">
+            <svg viewBox="0 0 24 24"><path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+            Структура папок
+          </button>
+          <div class="tooltip tree" id="structureTip" role="tooltip">
+            <div class="tree-title">📁 Основна директорія</div>
+            <ul>
+              <li><b data-folder="downloaded">downloaded-images/</b><span>Step 3 — завантажені фото, підпапка на кожен артикул</span></li>
+              <li><b data-folder="png">png/</b><span>вирізані PNG одягу — вхід для обкладинок одягу та «Виділити взуття»</span></li>
+              <li><b data-folder="png_shoes">png_shoes/</b><span>PNG взуття — вхід для обкладинок взуття</span></li>
+              <li><b data-folder="png_bc">png_bc/</b><span>використані PNG (сюди переміщуються після генерації); джерело для дитячих обкладинок; потрапляє в бекап</span></li>
+              <li><b data-folder="covers">обкладинки/</b><span>готові обкладинки JPG</span></li>
+              <li><b data-folder="backups">_backups/</b><span>бекапи: Excel + png_bc</span></li>
+              <li class="file"><b data-folder="child_txt">child_shoes.txt</b><span>список дитячого взуття (п.6)</span></li>
+              <li class="file"><b data-folder="not_found_txt">not_found.txt</b><span>не знайдені артикули</span></li>
+            </ul>
+            <div class="tree-note">Папки створюються автоматично при виборі Основної директорії.</div>
+          </div>
+        </div>
+
+        <button class="theme-toggle" id="themeToggle" type="button" title="Світла / темна тема" aria-label="Перемкнути тему">
+          <span class="knob">
+            <svg class="sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5"/><path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3M4.6 4.6l2.1 2.1M17.3 17.3l2.1 2.1M4.6 19.4l2.1-2.1M17.3 6.7l2.1-2.1"/></svg>
+            <svg class="moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg>
+          </span>
+        </button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <!-- ============ Ліва колонка: налаштування ============ -->
+      <aside class="column">
+        <section class="card">
+          <div class="card-head">
+            <span class="step">0</span>
+            <h2>Основна директорія</h2>
+            <span class="hint" data-tip="Робоча папка. Запам'ятовується; всі діалоги вибору файлів відкриваються в ній.">?</span>
+          </div>
+          <div class="path-field" id="baseField">
+            <span class="path-text" id="basePath">Не вибрано</span>
+            <button class="icon-only ghost" onclick="openFolder('')" title="Відкрити в провіднику">
+              <svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
+            </button>
+          </div>
+          <button class="wide" onclick="chooseBaseDir()">Вибрати папку…</button>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <span class="step">1</span>
+            <h2>Excel файл</h2>
+            <span class="hint" data-tip="Потрібні листи «Шаблон» і «Справочник». Шлях запам'ятовується.">?</span>
+          </div>
+          <div class="path-field" id="excelField">
+            <span class="path-text" id="excelPath">Не вибрано</span>
+          </div>
+          <button class="wide" onclick="chooseExcel()">Вибрати файл…</button>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <span class="step">2</span>
+            <h2>Дитяче взуття</h2>
+            <span class="hint" data-tip="Шаблон: H = «Детский»; Справочник: B = «Взуття» → масив A; залишаються рядки, де F є в масиві. Артикули (A) → child_shoes.txt">?</span>
+          </div>
+          <p class="muted small">Формує список артикулів дитячого взуття з Excel.</p>
+          <button class="wide" onclick="run('build_child_list')">Сформувати child_shoes.txt</button>
+        </section>
+
+        <section class="card danger-zone">
+          <div class="card-head">
+            <span class="step warn">!</span>
+            <h2>Бекап і очищення</h2>
+            <span class="hint" data-tip="Копіює Excel і переносить png_bc у _backups/&lt;дата&gt;, потім видаляє все інше в Основній директорії й створює порожню структуру.">?</span>
+          </div>
+          <button class="wide danger" onclick="backupAndClean()">Зробити бекап і очистити</button>
+        </section>
+      </aside>
+
+      <!-- ============ Права колонка: кроки ============ -->
+      <div class="column wide-col">
+        <section class="card">
+          <div class="card-head">
+            <span class="step">3</span>
+            <h2>Парсинг фото</h2>
+            <span class="hint" data-tip="Шукає фото по артикулах з листа «Шаблон» і зберігає в downloaded-images/&lt;артикул&gt;/">?</span>
+          </div>
+          <div class="row">
+            <label class="field grow">
+              <span>API ключ serper.dev</span>
+              <input id="apiKey" type="password" placeholder="Ключ" autocomplete="off" />
+            </label>
+            <label class="field narrow">
+              <span>Регіон</span>
+              <input id="region" type="text" placeholder="напр. ua" />
+            </label>
+            <button class="accent" onclick="downloadImages()">
+              <svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
+              Завантажити
+            </button>
+          </div>
+          <details class="more">
+            <summary>Проксі (необов'язково)</summary>
+            <label class="field">
+              <span>Якщо пряме завантаження не вдалось — повтор через проксі</span>
+              <input id="proxy" type="text" placeholder="http://user:pass@host:port" autocomplete="off" />
+            </label>
+          </details>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <span class="step">4</span>
+            <h2>Перевірка та підготовка</h2>
+          </div>
+          <div class="tool-grid">
+            <div class="tool">
+              <div class="tool-title">
+                Список не знайдених
+                <span class="hint" data-tip="Порівнює артикули з Excel з назвами зображень у вибраній папці → not_found.txt">?</span>
+              </div>
+              <div class="row tight">
+                <select class="dir-select grow" id="notFoundDir" data-default="downloaded"></select>
+                <button onclick="runWithDir('generate_not_found_list', 'notFoundDir')">Генерувати</button>
+              </div>
+            </div>
+            <div class="tool">
+              <div class="tool-title">
+                Зміна формату в JPG
+                <span class="hint" data-tip="Конвертує .png / .webp / .jfif у вибраній папці (з підпапками) в .jpg, оригінали видаляє">?</span>
+              </div>
+              <div class="row tight">
+                <select class="dir-select grow" id="extDir" data-default="downloaded"></select>
+                <button onclick="runWithDir('change_ext', 'extDir')">Змінити</button>
+              </div>
+            </div>
+            <div class="tool">
+              <div class="tool-title">
+                Переназвати
+                <span class="hint" data-tip="«1___КОД___...jpg» → «КОД.jpg» у вибраній папці">?</span>
+              </div>
+              <div class="row tight">
+                <select class="dir-select grow" id="renameDir" data-default="obc"></select>
+                <button onclick="runWithDir('rename', 'renameDir')">Переназвати</button>
+              </div>
+            </div>
+            <div class="tool">
+              <div class="tool-title">
+                Групувати по 3
+                <span class="hint" data-tip="Розкладає файли папки у group_1, group_2, … по 3 файли">?</span>
+              </div>
+              <div class="row tight">
+                <input id="groupPath" class="grow" type="text" placeholder="Шлях до папки" />
+                <button class="ghost" onclick="chooseGroupDir()">…</button>
+                <button onclick="groupImages()">Групувати</button>
+              </div>
+            </div>
+          </div>
+          <div class="row chips">
+            <button class="chip" onclick="run('mirroring')" data-tip="Відзеркалює вибрані файли по горизонталі (перезаписує)">
+              <svg viewBox="0 0 24 24"><path d="M12 3v18M8 7 3 12l5 5M16 7l5 5-5 5"/></svg>Відзеркалити
+            </button>
+            <button class="chip" onclick="run('pick_shoes')" data-tip="Вибрані PNG з png/ переміщуються в png_shoes/">
+              <svg viewBox="0 0 24 24"><path d="M3 17h18v2H3zM4 17c0-4 2-9 5-9 1 2 3 3 6 3 3 0 5 2 5 6"/></svg>Виділити взуття → png_shoes
+            </button>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <span class="step">5</span>
+            <h2>Обкладинки</h2>
+            <span class="hint" data-tip="Результат → обкладинки/. Використані PNG переміщуються в png_bc/">?</span>
+            <button class="icon-only ghost push" onclick="openFolder(state.structure.covers)" title="Відкрити папку обкладинки">
+              <svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
+            </button>
+          </div>
+
+          <div class="cover-grid">
+            <button class="cover-btn" onclick="run('covers_clothes', true)" data-tip="Мульти-вибір з png/. Без відступу від краю.">
+              <span class="cover-ico">🧍</span>
+              <span class="cover-name">Одяг з моделями</span>
+              <span class="cover-sub">без відступу</span>
+            </button>
+            <button class="cover-btn" onclick="run('covers_clothes', false)" data-tip="Мульти-вибір з png/. З відступом від краю.">
+              <span class="cover-ico">👕</span>
+              <span class="cover-name">Одяг без моделей</span>
+              <span class="cover-sub">з відступом</span>
+            </button>
+            <button class="cover-btn" onclick="runAngle('covers_shoes')" data-tip="Мульти-вибір з png_shoes/. Фон 810х853, авто-вирівнювання підошви.">
+              <span class="cover-ico">👟</span>
+              <span class="cover-name">Взуття</span>
+              <span class="cover-sub">на фоні</span>
+            </button>
+            <button class="cover-btn" onclick="runAngle('covers_child')" data-tip="Бере артикули з child_shoes.txt, шукає файли в png_bc/, робить зменшені обкладинки (64%, відступ 100px).">
+              <span class="cover-ico">🧒</span>
+              <span class="cover-name">Дитяче взуття</span>
+              <span class="cover-sub">з png_bc</span>
+            </button>
+          </div>
+
+          <div class="angle-row">
+            <label for="angle">Відхилення (вирівнювання підошви), °</label>
+            <input id="angleRange" type="range" min="0" max="30" step="0.5" />
+            <input id="angle" type="number" min="0" max="45" step="0.5" />
+            <button class="ghost small-btn" onclick="resetAngle()" title="Повернути значення за замовчуванням">↺</button>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <footer class="statusbar">
+      <div class="progress" id="progress">
+        <div class="progress-fill" id="progressFill"></div>
+      </div>
+      <div class="status-line">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">Готово до роботи</span>
+        <span class="push" id="progressText">0%</span>
+      </div>
+    </footer>
+
+    <div class="toasts" id="toasts"></div>
+
+    <div class="modal-backdrop" id="modal" hidden>
+      <div class="modal">
+        <h3>Бекап і очищення</h3>
+        <p>Excel і <b>png_bc</b> буде збережено в <b>_backups/&lt;дата&gt;</b>. Все інше в
+          <b id="modalBase"></b> буде <b class="danger-text">видалено</b>:</p>
+        <ul id="modalItems" class="modal-list"></ul>
+        <div class="row end">
+          <button class="ghost" onclick="closeModal(false)">Скасувати</button>
+          <button class="danger" onclick="closeModal(true)">Так, виконати</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="floating-tip" id="floatingTip" role="tooltip"></div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
