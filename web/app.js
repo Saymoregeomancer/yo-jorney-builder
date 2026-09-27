@@ -58,6 +58,33 @@ function fillDirSelects() {
   });
 }
 
+// Список папок перечитується при кожному розкритті селектора.
+async function refreshSubdirs() {
+  try {
+    state.subdirs = await eel.list_subdirs()();
+  } catch (e) {
+    return;
+  }
+  fillDirSelects();
+}
+
+document.addEventListener("mousedown", async (e) => {
+  const select = e.target.closest(".dir-select");
+  if (!select || select.disabled || e.button !== 0) return;
+  e.preventDefault(); // спершу оновлюємо список, потім відкриваємо
+  select.focus();
+  await refreshSubdirs();
+  if (select.disabled) return;
+  try {
+    select.showPicker();
+  } catch (err) {}
+});
+
+document.addEventListener("keydown", (e) => {
+  const select = e.target.closest && e.target.closest(".dir-select");
+  if (select && (e.key === "F4" || (e.altKey && e.key === "ArrowDown"))) refreshSubdirs();
+});
+
 // ------------------------------------------------------------------ виконання дій
 function setBusy(value) {
   busy = value;
@@ -106,8 +133,13 @@ function runWithDir(name, selectId) {
   run(name, dir);
 }
 
-function runAngle(name) {
-  run(name, $("#angle").value);
+// Обкладинки: папки «з» / «в» беруться з селекторів <prefix>Src / <prefix>Dst.
+function runCover(name, prefix, withModels) {
+  const src = $("#" + prefix + "Src").value;
+  const dst = $("#" + prefix + "Dst").value;
+  if (!src || !dst) return toast("Немає доступних папок — виберіть Основну директорію", "err");
+  if (name === "covers_clothes") run(name, withModels, src, dst);
+  else run(name, $("#angle").value, src, dst);
 }
 
 async function chooseBaseDir() {

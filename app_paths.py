@@ -13,10 +13,13 @@ PNG_SHOES_DIR = "png_shoes"            # вирізані PNG взуття — �
 PNG_BC_DIR = "png_bc"                  # використані PNG (архів, з нього робляться дитячі обкладинки)
 COVERS_DIR = "обкладинки"              # готові обкладинки JPG
 BACKUPS_DIR = "_backups"               # бекапи (ексель + png_bc)
+BOT_DIR = "бот"                        # фото з бота: підпапка на кожен артикул (ці артикули не парсяться)
+BAD_DIR = "bad"                        # браковані PNG, винесені з png_bc за списком bad.txt
+BAD_TXT = "bad.txt"                    # список артикулів браку
 CHILD_SHOES_TXT = "child_shoes.txt"    # список артикулів дитячого взуття
 NOT_FOUND_TXT = "not_found.txt"        # список не знайдених артикулів
 
-STRUCTURE = [DOWNLOADED_DIR, PNG_DIR, PNG_SHOES_DIR, PNG_BC_DIR, COVERS_DIR]
+STRUCTURE = [DOWNLOADED_DIR, PNG_DIR, PNG_SHOES_DIR, PNG_BC_DIR, COVERS_DIR, BOT_DIR, BAD_DIR]
 
 
 def is_frozen():

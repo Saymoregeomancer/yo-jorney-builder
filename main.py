@@ -163,6 +163,9 @@ def get_state():
             "png_bc": ap.PNG_BC_DIR,
             "covers": ap.COVERS_DIR,
             "backups": ap.BACKUPS_DIR,
+            "bot": ap.BOT_DIR,
+            "bad": ap.BAD_DIR,
+            "bad_txt": ap.BAD_TXT,
             "child_txt": ap.CHILD_SHOES_TXT,
             "not_found_txt": ap.NOT_FOUND_TXT,
         },
@@ -224,7 +227,8 @@ def open_folder(subdir=""):
 
 
 def _choose_images(subdir, title):
-    start = base_sub(subdir)
+    """subdir — назва підпапки Основної директорії або абсолютний шлях; '' — сама Основна директорія."""
+    start = base_sub(subdir) if subdir else require_base()
     os.makedirs(start, exist_ok=True)
     paths = _run_dialog(
         filedialog.askopenfilenames,
@@ -236,6 +240,15 @@ def _choose_images(subdir, title):
 
 
 # ------------------------------------------------------------------ Step 3: завантаження
+def _find_bot_dir(base):
+    """Папка «бот» (або «bot») в Основній директорії, регістр не важливий."""
+    names = {ap.BOT_DIR.casefold(), "bot"}
+    for entry in os.scandir(base):
+        if entry.is_dir() and entry.name.strip().casefold() in names:
+            return entry.path
+    return None
+
+
 @eel.expose
 @operation
 def download_images(api_key, region):
@@ -265,6 +278,16 @@ def download_images(api_key, region):
     if not items:
         raise UserError("На листі 'Шаблон' немає артикулів.")
 
+    bot_dir = _find_bot_dir(base)
+    skipped = 0
+    if bot_dir:
+        in_bot = {e.name.strip().casefold() for e in os.scandir(bot_dir) if e.is_dir()}
+        before = len(items)
+        items = [it for it in items if it["code"].casefold() not in in_bot]
+        skipped = before - len(items)
+    if not items:
+        raise UserError(f"Усі артикули вже є в папці «{ap.BOT_DIR}», парсити нічого.")
+
     progress = Progress(len(items), start=3, end=99)
     downloaded, errors = 0, 0
     for i in range(0, len(items), 100):
@@ -291,8 +314,14 @@ def download_images(api_key, region):
                 print(f"Помилка для {item.get('searchParameters')}: {e}")
 
     progress.finish("Готово")
-    return {"message": f"Завантажено {downloaded} зображень для {len(items)} артикулів"
-                       + (f", помилок: {errors}" if errors else "")}
+    msg = f"Завантажено {downloaded} зображень для {len(items)} артикулів"
+    if skipped:
+        msg += f", пропущено (є в «{ap.BOT_DIR}»): {skipped}"
+    elif not bot_dir:
+        msg += f". Папку «{ap.BOT_DIR}» не знайдено, парсились усі артикули"
+    if errors:
+        msg += f", помилок: {errors}"
+    return {"message": msg}
 
 
 # ------------------------------------------------------------------ списки / формат
@@ -370,6 +399,32 @@ def rename(subdir):
     return {"message": f"Перейменовано файлів: {renamed}"}
 
 
+@eel.expose
+@operation
+def rename_bot(subdir):
+    """«КОД-щось-1.jpg» → «КОД-щось.jpg»: відкидається останній фрагмент після «-»."""
+    folder = _resolve_subdir(subdir)
+    renamed, skipped = 0, 0
+    for file in Path(folder).iterdir():
+        if not file.is_file() or file.suffix.lower() not in IMAGE_EXTENSIONS or "-" not in file.stem:
+            continue
+        new_stem = "-".join(file.stem.split("-")[:-1])
+        new_path = file.with_name(new_stem + file.suffix)
+        if not new_stem or new_path.exists():
+            skipped += 1
+            continue
+        try:
+            file.rename(new_path)
+            renamed += 1
+        except Exception as e:
+            skipped += 1
+            print(f"✗ {file.name}: {e}")
+    msg = f"Перейменовано файлів: {renamed}"
+    if skipped:
+        msg += f". Пропущено (така назва вже існує або помилка): {skipped}"
+    return {"message": msg}
+
+
 # ------------------------------------------------------------------ Step 4: групування, дзеркало
 @eel.expose
 @operation
@@ -404,7 +459,7 @@ def group_images(path):
 @operation
 def mirroring():
     paths = _run_dialog(
-        filedialog.askopenfilenames, **_dialog_kwargs(base_sub(ap.DOWNLOADED_DIR), title="Файли для відзеркалення")
+        filedialog.askopenfilenames, **_dialog_kwargs(require_base(), title="Файли для відзеркалення")
     )
     if not paths:
         return {"cancelled": True}
@@ -421,7 +476,7 @@ def mirroring():
 @eel.expose
 @operation
 def pick_shoes():
-    files = _choose_images(ap.PNG_DIR, "Виберіть взуття (буде переміщено в png_shoes)")
+    files = _choose_images("", "Виберіть взуття (буде переміщено в png_shoes)")
     if not files:
         return {"cancelled": True}
     target = base_sub(ap.PNG_SHOES_DIR)
@@ -430,10 +485,44 @@ def pick_shoes():
     return {"message": f"Переміщено в {ap.PNG_SHOES_DIR}: {len(files)}"}
 
 
+@eel.expose
+@operation
+def move_bad():
+    """Артикули з bad.txt шукаються в png_bc/ і переносяться в bad/."""
+    base = require_base()
+    candidates = [os.path.join(base, n) for n in (ap.BAD_TXT, "bad")]
+    list_path = next((p for p in candidates if os.path.isfile(p)), None)
+    if not list_path:
+        raise UserError(f"Файл {ap.BAD_TXT} не знайдено в Основній директорії.")
+    codes = read_lines(list_path)
+    if not codes:
+        raise UserError(f"Список {ap.BAD_TXT} порожній.")
+
+    by_name = {}
+    for file in list_images(os.path.join(base, ap.PNG_BC_DIR)):
+        by_name.setdefault(Path(file).stem.casefold(), []).append(file)
+
+    target = ensure_dir(os.path.join(base, ap.BAD_DIR))
+    moved, missing = 0, []
+    for code in codes:
+        files = by_name.pop(code.casefold(), None)
+        if not files:
+            missing.append(code)
+            continue
+        for file in files:
+            move_file(file, os.path.join(target, os.path.basename(file)))
+            moved += 1
+    msg = f"Переміщено в {ap.BAD_DIR}: {moved}"
+    if missing:
+        write_lines(os.path.join(base, "bad_not_found.txt"), missing)
+        msg += f". Не знайдено в {ap.PNG_BC_DIR}: {len(missing)} (bad_not_found.txt)"
+    return {"message": msg}
+
+
 # ------------------------------------------------------------------ обкладинки
-def _generate_covers(files, make_cover):
-    covers = base_sub(ap.COVERS_DIR)
-    png_bc = base_sub(ap.PNG_BC_DIR)
+def _generate_covers(files, make_cover, dst_dir):
+    covers = _resolve_subdir(dst_dir)
+    png_bc = ensure_dir(base_sub(ap.PNG_BC_DIR))
     progress = Progress(len(files))
     done, failed = 0, []
     for file in files:
@@ -441,13 +530,14 @@ def _generate_covers(files, make_cover):
         progress.step(name)
         try:
             make_cover(file, os.path.join(covers, f"{name}.jpg"))
-            move_file(file, os.path.join(png_bc, os.path.basename(file)))
+            if not _is_inside(file, png_bc):  # файл уже в png_bc — не переміщуємо сам у себе
+                move_file(file, os.path.join(png_bc, os.path.basename(file)))
             done += 1
         except Exception as e:
             failed.append(name)
             print(f"✗ {file}: {e}")
     progress.finish()
-    msg = f"Створено обкладинок: {done} → {ap.COVERS_DIR}, PNG переміщено в {ap.PNG_BC_DIR}"
+    msg = f"Створено обкладинок: {done} → {os.path.basename(covers)}, PNG переміщено в {ap.PNG_BC_DIR}"
     if failed:
         msg += f". Помилки: {', '.join(failed[:10])}"
     return {"message": msg}
@@ -463,25 +553,25 @@ def _parse_angle(value):
 
 @eel.expose
 @operation
-def covers_clothes(with_models):
+def covers_clothes(with_models, src_dir=ap.PNG_DIR, dst_dir=ap.COVERS_DIR):
     title = "Одяг з моделями" if with_models else "Одяг без моделей"
-    files = _choose_images(ap.PNG_DIR, f"{title}: виберіть PNG")
+    files = _choose_images(_resolve_subdir(src_dir), f"{title}: виберіть PNG")
     if not files:
         return {"cancelled": True}
     return _generate_covers(
-        files, lambda src, dst: create_cover_other(src, dst, with_padding=not with_models)
+        files, lambda src, dst: create_cover_other(src, dst, with_padding=not with_models), dst_dir
     )
 
 
 @eel.expose
 @operation
-def covers_shoes(max_angle):
+def covers_shoes(max_angle, src_dir=ap.PNG_SHOES_DIR, dst_dir=ap.COVERS_DIR):
     angle = _parse_angle(max_angle)
-    files = _choose_images(ap.PNG_SHOES_DIR, "Взуття: виберіть PNG")
+    files = _choose_images(_resolve_subdir(src_dir), "Взуття: виберіть PNG")
     if not files:
         return {"cancelled": True}
     return _generate_covers(
-        files, lambda src, dst: create_cover_with_background(src, dst, ap.BG_IMAGE, angle)
+        files, lambda src, dst: create_cover_with_background(src, dst, ap.BG_IMAGE, angle), dst_dir
     )
 
 
@@ -522,8 +612,10 @@ def build_child_list():
 
 @eel.expose
 @operation
-def covers_child(max_angle):
+def covers_child(max_angle, src_dir=ap.PNG_BC_DIR, dst_dir=ap.COVERS_DIR):
     angle = _parse_angle(max_angle)
+    src = _resolve_subdir(src_dir)
+    covers = _resolve_subdir(dst_dir)
     list_path = base_sub(ap.CHILD_SHOES_TXT)
     if not os.path.isfile(list_path):
         write_lines(list_path, build_child_shoes_codes(require_excel()))
@@ -532,15 +624,15 @@ def covers_child(max_angle):
         raise UserError(f"Список {ap.CHILD_SHOES_TXT} порожній.")
 
     by_name = {}
-    for file in list_images(base_sub(ap.PNG_BC_DIR)):
+    for file in list_images(src):
         by_name.setdefault(Path(file).stem.casefold(), file)
 
+    src_name = os.path.basename(src)
     matched = [(code, by_name[code.casefold()]) for code in codes if code.casefold() in by_name]
     missing = [code for code in codes if code.casefold() not in by_name]
     if not matched:
-        raise UserError(f"У {ap.PNG_BC_DIR} не знайдено жодного файлу з {ap.CHILD_SHOES_TXT}.")
+        raise UserError(f"У {src_name} не знайдено жодного файлу з {ap.CHILD_SHOES_TXT}.")
 
-    covers = base_sub(ap.COVERS_DIR)
     progress = Progress(len(matched))
     done = 0
     for code, file in matched:
@@ -552,10 +644,10 @@ def covers_child(max_angle):
             print(f"✗ {file}: {e}")
     progress.finish()
 
-    msg = f"Дитячих обкладинок: {done} → {ap.COVERS_DIR}"
+    msg = f"Дитячих обкладинок: {done} → {os.path.basename(covers)}"
     if missing:
         write_lines(base_sub("child_shoes_not_found.txt"), missing)
-        msg += f". Немає в {ap.PNG_BC_DIR}: {len(missing)} (child_shoes_not_found.txt)"
+        msg += f". Немає в {src_name}: {len(missing)} (child_shoes_not_found.txt)"
     return {"message": msg}
 
 

@@ -381,6 +381,18 @@ button.chip { height: 32px; border-radius: 999px; font-size: 12px; }
 .cover-name { font-size: 13px; }
 .cover-sub { font-size: 11px; color: var(--muted); font-weight: 500; }
 
+.cover-item { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.cover-item .cover-btn { flex: 1; }
+.cover-dir {
+    display: grid;
+    grid-template-columns: 18px 1fr;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--muted);
+}
+.cover-dir select { height: 30px; padding: 0 8px; font-size: 12px; border-radius: 8px; }
+
 .angle-row {
     display: flex;
     align-items: center;

@@ -41,9 +41,12 @@
               <li><b data-folder="png">png/</b><span>вирізані PNG одягу — вхід для обкладинок одягу та «Виділити взуття»</span></li>
               <li><b data-folder="png_shoes">png_shoes/</b><span>PNG взуття — вхід для обкладинок взуття</span></li>
               <li><b data-folder="png_bc">png_bc/</b><span>використані PNG (сюди переміщуються після генерації); джерело для дитячих обкладинок; потрапляє в бекап</span></li>
-              <li><b data-folder="covers">обкладинки/</b><span>готові обкладинки JPG</span></li>
+              <li><b data-folder="covers">обкладинки/</b><span>готові обкладинки JPG (папку можна змінити в п.5)</span></li>
+              <li><b data-folder="bot">бот/</b><span>фото з бота, підпапка на артикул; ці артикули не парсяться в п.3</span></li>
+              <li><b data-folder="bad">bad/</b><span>брак, винесений з png_bc за списком bad.txt</span></li>
               <li><b data-folder="backups">_backups/</b><span>бекапи: Excel + png_bc</span></li>
-              <li class="file"><b data-folder="child_txt">child_shoes.txt</b><span>список дитячого взуття (п.6)</span></li>
+              <li class="file"><b data-folder="child_txt">child_shoes.txt</b><span>список дитячого взуття (п.2)</span></li>
+              <li class="file"><b data-folder="bad_txt">bad.txt</b><span>артикули браку, по одному на рядок (створюєте самі)</span></li>
               <li class="file"><b data-folder="not_found_txt">not_found.txt</b><span>не знайдені артикули</span></li>
             </ul>
             <div class="tree-note">Папки створюються автоматично при виборі Основної директорії.</div>
@@ -66,7 +69,7 @@
           <div class="card-head">
             <span class="step">0</span>
             <h2>Основна директорія</h2>
-            <span class="hint" data-tip="Робоча папка. Запам'ятовується; всі діалоги вибору файлів відкриваються в ній.">?</span>
+            <span class="hint" data-tip="Робоча папка. Запам'ятовується; всі діалоги вибору файлів відкриваються в ній. Списки папок у селекторах оновлюються при кожному відкритті.">?</span>
           </div>
           <div class="path-field" id="baseField">
             <span class="path-text" id="basePath">Не вибрано</span>
@@ -115,7 +118,7 @@
           <div class="card-head">
             <span class="step">3</span>
             <h2>Парсинг фото</h2>
-            <span class="hint" data-tip="Шукає фото по артикулах з листа «Шаблон» і зберігає в downloaded-images/&lt;артикул&gt;/">?</span>
+            <span class="hint" data-tip="Шукає фото по артикулах з листа «Шаблон» і зберігає в downloaded-images/&lt;артикул&gt;/. Артикули, для яких у папці «бот» уже є підпапка з такою назвою, пропускаються.">?</span>
           </div>
           <div class="row">
             <label class="field grow">
@@ -178,6 +181,16 @@
             </div>
             <div class="tool">
               <div class="tool-title">
+                Переназвати з бота
+                <span class="hint" data-tip="«КОД-назва-1.jpg» → «КОД-назва.jpg»: назва ділиться по «-», останній фрагмент відкидається. Якщо така назва вже є, файл пропускається.">?</span>
+              </div>
+              <div class="row tight">
+                <select class="dir-select grow" id="renameBotDir" data-default="bot"></select>
+                <button onclick="runWithDir('rename_bot', 'renameBotDir')">Переназвати</button>
+              </div>
+            </div>
+            <div class="tool">
+              <div class="tool-title">
                 Групувати по 3
                 <span class="hint" data-tip="Розкладає файли папки у group_1, group_2, … по 3 файли">?</span>
               </div>
@@ -189,11 +202,14 @@
             </div>
           </div>
           <div class="row chips">
-            <button class="chip" onclick="run('mirroring')" data-tip="Відзеркалює вибрані файли по горизонталі (перезаписує)">
+            <button class="chip" onclick="run('mirroring')" data-tip="Діалог відкривається в Основній директорії. Вибрані файли відзеркалюються по горизонталі (перезаписуються).">
               <svg viewBox="0 0 24 24"><path d="M12 3v18M8 7 3 12l5 5M16 7l5 5-5 5"/></svg>Відзеркалити
             </button>
-            <button class="chip" onclick="run('pick_shoes')" data-tip="Вибрані PNG з png/ переміщуються в png_shoes/">
+            <button class="chip" onclick="run('pick_shoes')" data-tip="Діалог відкривається в Основній директорії. Вибрані PNG переміщуються в png_shoes/.">
               <svg viewBox="0 0 24 24"><path d="M3 17h18v2H3zM4 17c0-4 2-9 5-9 1 2 3 3 6 3 3 0 5 2 5 6"/></svg>Виділити взуття → png_shoes
+            </button>
+            <button class="chip" onclick="run('move_bad')" data-tip="Читає bad.txt з Основної директорії (артикул на рядок), знаходить ці файли в png_bc/ і переносить у bad/. Не знайдені → bad_not_found.txt">
+              <svg viewBox="0 0 24 24"><path d="M12 3 2 20h20zM12 10v4M12 17v.5"/></svg>Брак з bad.txt → bad
             </button>
           </div>
         </section>
@@ -202,33 +218,49 @@
           <div class="card-head">
             <span class="step">5</span>
             <h2>Обкладинки</h2>
-            <span class="hint" data-tip="Результат → обкладинки/. Використані PNG переміщуються в png_bc/">?</span>
+            <span class="hint" data-tip="Під кожною кнопкою: «з» — папка з PNG, «в» — куди зберегти обкладинки (за замовчуванням обкладинки/). Використані PNG переміщуються в png_bc/. Кут відхилення нижче стосується взуття.">?</span>
             <button class="icon-only ghost push" onclick="openFolder(state.structure.covers)" title="Відкрити папку обкладинки">
               <svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
             </button>
           </div>
 
           <div class="cover-grid">
-            <button class="cover-btn" onclick="run('covers_clothes', true)" data-tip="Мульти-вибір з png/. Без відступу від краю.">
-              <span class="cover-ico">🧍</span>
-              <span class="cover-name">Одяг з моделями</span>
-              <span class="cover-sub">без відступу</span>
-            </button>
-            <button class="cover-btn" onclick="run('covers_clothes', false)" data-tip="Мульти-вибір з png/. З відступом від краю.">
-              <span class="cover-ico">👕</span>
-              <span class="cover-name">Одяг без моделей</span>
-              <span class="cover-sub">з відступом</span>
-            </button>
-            <button class="cover-btn" onclick="runAngle('covers_shoes')" data-tip="Мульти-вибір з png_shoes/. Фон 810х853, авто-вирівнювання підошви.">
-              <span class="cover-ico">👟</span>
-              <span class="cover-name">Взуття</span>
-              <span class="cover-sub">на фоні</span>
-            </button>
-            <button class="cover-btn" onclick="runAngle('covers_child')" data-tip="Бере артикули з child_shoes.txt, шукає файли в png_bc/, робить зменшені обкладинки (64%, відступ 100px).">
-              <span class="cover-ico">🧒</span>
-              <span class="cover-name">Дитяче взуття</span>
-              <span class="cover-sub">з png_bc</span>
-            </button>
+            <div class="cover-item">
+              <button class="cover-btn" onclick="runCover('covers_clothes', 'withModels', true)" data-tip="Відкриває папку «з», у ній вибираєте PNG (можна кілька). Без відступу від краю. Результат іде в папку «в».">
+                <span class="cover-ico">🧍</span>
+                <span class="cover-name">Одяг з моделями</span>
+                <span class="cover-sub">без відступу</span>
+              </button>
+              <label class="cover-dir" data-tip="Звідки брати PNG">з <select class="dir-select" id="withModelsSrc" data-default="png"></select></label>
+              <label class="cover-dir" data-tip="Куди зберегти обкладинки">в <select class="dir-select" id="withModelsDst" data-default="covers"></select></label>
+            </div>
+            <div class="cover-item">
+              <button class="cover-btn" onclick="runCover('covers_clothes', 'noModels', false)" data-tip="Відкриває папку «з», у ній вибираєте PNG (можна кілька). З відступом від краю. Результат іде в папку «в».">
+                <span class="cover-ico">👕</span>
+                <span class="cover-name">Одяг без моделей</span>
+                <span class="cover-sub">з відступом</span>
+              </button>
+              <label class="cover-dir" data-tip="Звідки брати PNG">з <select class="dir-select" id="noModelsSrc" data-default="png"></select></label>
+              <label class="cover-dir" data-tip="Куди зберегти обкладинки">в <select class="dir-select" id="noModelsDst" data-default="covers"></select></label>
+            </div>
+            <div class="cover-item">
+              <button class="cover-btn" onclick="runCover('covers_shoes', 'shoes')" data-tip="Відкриває папку «з», у ній вибираєте PNG (можна кілька). Фон 810х853, авто-вирівнювання підошви. Результат іде в папку «в».">
+                <span class="cover-ico">👟</span>
+                <span class="cover-name">Взуття</span>
+                <span class="cover-sub">на фоні</span>
+              </button>
+              <label class="cover-dir" data-tip="Звідки брати PNG">з <select class="dir-select" id="shoesSrc" data-default="png_shoes"></select></label>
+              <label class="cover-dir" data-tip="Куди зберегти обкладинки">в <select class="dir-select" id="shoesDst" data-default="covers"></select></label>
+            </div>
+            <div class="cover-item">
+              <button class="cover-btn" onclick="runCover('covers_child', 'child')" data-tip="Бере артикули з child_shoes.txt, шукає їх у папці «з» і робить зменшені обкладинки (64%, відступ 100px) в папку «в». Файли не переміщуються.">
+                <span class="cover-ico">🧒</span>
+                <span class="cover-name">Дитяче взуття</span>
+                <span class="cover-sub">за child_shoes.txt</span>
+              </button>
+              <label class="cover-dir" data-tip="Де шукати PNG з child_shoes.txt">з <select class="dir-select" id="childSrc" data-default="png_bc"></select></label>
+              <label class="cover-dir" data-tip="Куди зберегти обкладинки">в <select class="dir-select" id="childDst" data-default="covers"></select></label>
+            </div>
           </div>
 
           <div class="angle-row">
