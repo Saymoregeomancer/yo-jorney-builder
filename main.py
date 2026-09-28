@@ -6,6 +6,7 @@ import random
 import shutil
 import sys
 import traceback
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
 
@@ -240,6 +241,9 @@ def _choose_images(subdir, title):
 
 
 # ------------------------------------------------------------------ Step 3: завантаження
+SEARCH_CHUNK = 100       # артикулів в одному запиті до serper.dev
+DOWNLOAD_WORKERS = 16    # паралельних завантажень фото
+
 def _find_bot_dir(base):
     """Папка «бот» (або «bot») в Основній директорії, регістр не важливий."""
     names = {ap.BOT_DIR.casefold(), "bot"}
@@ -288,18 +292,19 @@ def download_images(api_key, region):
     if not items:
         raise UserError(f"Усі артикули вже є в папці «{ap.BOT_DIR}», парсити нічого.")
 
-    progress = Progress(len(items), start=3, end=99)
-    downloaded, errors = 0, 0
-    for i in range(0, len(items), 100):
-        chunk = items[i:i + 100]
+    # 1) Пошук: API відповідає швидко, збираємо всі посилання на фото.
+    search = Progress(math.ceil(len(items) / SEARCH_CHUNK), start=3, end=15)
+    by_code = {it["code"]: it for it in items}
+    jobs, errors = [], 0
+    for i in range(0, len(items), SEARCH_CHUNK):
+        chunk = items[i:i + SEARCH_CHUNK]
+        search.step(f"Пошук фото: {min(i + SEARCH_CHUNK, len(items))} з {len(items)}")
         resp_data = json.loads(req(generate_params(chunk, region), api_key))
-
         for item in resp_data:
             try:
                 code = item["searchParameters"]["q"].split(" ")[0]
-                descr = search_in_data(code, items) or {}
+                descr = by_code.get(code) or search_in_data(code, items) or {}
                 target = os.path.join(images_root, code)
-                progress.step(f"Завантажую {code}")
                 for img in item.get("images", []):
                     w, h = img["imageWidth"], img["imageHeight"]
                     if w < 351 and h < 351:
@@ -307,11 +312,30 @@ def download_images(api_key, region):
                     uid = f"{random.randint(0, 999):03d}"
                     name = (f"{img['position']}___{code}___{w}x{h}__{descr.get('prod_type')}"
                             f"__{descr.get('prod_brand')}__{region}__{uid}")
-                    if download_image(img["imageUrl"], target, name, proxy):
-                        downloaded += 1
+                    jobs.append((code, img["imageUrl"], target, name))
             except Exception as e:
                 errors += 1
                 print(f"Помилка для {item.get('searchParameters')}: {e}")
+
+    # 2) Завантаження паралельно. Потоки качають, а головний greenlet Eel лише
+    #    чекає з короткими паузами, щоб інтерфейс і прогрес не зависали.
+    progress = Progress(len(jobs), start=15, end=99)
+    downloaded = 0
+    with ThreadPoolExecutor(max_workers=DOWNLOAD_WORKERS) as pool:
+        pending = {pool.submit(download_image, url, target, name, proxy): code
+                   for code, url, target, name in jobs}
+        while pending:
+            done, _ = wait(pending, timeout=0.2, return_when=FIRST_COMPLETED)
+            for future in done:
+                code = pending.pop(future)
+                try:
+                    if future.result():
+                        downloaded += 1
+                except Exception as e:
+                    errors += 1
+                    print(f"Помилка завантаження для {code}: {e}")
+                progress.step(f"Завантажено {progress.done + 1} з {len(jobs)} ({code})")
+            eel.sleep(0)
 
     progress.finish("Готово")
     msg = f"Завантажено {downloaded} зображень для {len(items)} артикулів"
