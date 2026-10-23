@@ -18,8 +18,11 @@ BAD_DIR = "bad"                        # браковані PNG, винесен�
 BAD_TXT = "bad.txt"                    # список артикулів браку
 CHILD_SHOES_TXT = "child_shoes.txt"    # список артикулів дитячого взуття
 NOT_FOUND_TXT = "not_found.txt"        # список не знайдених артикулів
+OBC_SRC_DIR = "obc_src"                # відбір фото: основне фото кожного артикулу (фіолетове)
+EXTRA_DIR = "додаткові"                # відбір фото: додаткові фото, підпапка на артикул (оранжеві)
 
-STRUCTURE = [DOWNLOADED_DIR, PNG_DIR, PNG_SHOES_DIR, PNG_BC_DIR, COVERS_DIR, BOT_DIR, BAD_DIR]
+STRUCTURE = [DOWNLOADED_DIR, PNG_DIR, PNG_SHOES_DIR, PNG_BC_DIR, COVERS_DIR, BOT_DIR, BAD_DIR,
+             OBC_SRC_DIR, EXTRA_DIR]
 
 
 def is_frozen():

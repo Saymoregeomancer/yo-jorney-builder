@@ -1,11 +1,15 @@
+import base64
 import functools
+import io
 import json
 import math
 import os
 import random
+import threading
 import shutil
 import sys
 import traceback
+import zipfile
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
@@ -13,7 +17,9 @@ from pathlib import Path
 import eel
 import tkinter as tk
 from tkinter import filedialog
-from PIL import Image
+from collections import OrderedDict
+
+from PIL import Image, ImageOps
 
 import app_paths as ap
 from download import download_image, generate_params, normalize_filename, req, search_in_data
@@ -151,6 +157,8 @@ def _is_inside(path, folder):
 def get_state():
     config = ap.load_config()
     base = config["base_dir"]
+    if base and os.path.isdir(base):
+        ap.ensure_structure(base)       # нові папки (obc_src, додаткові) з'являються і в старих директоріях
     return {
         "config": config,
         "base_exists": bool(base) and os.path.isdir(base),
@@ -169,6 +177,8 @@ def get_state():
             "bad_txt": ap.BAD_TXT,
             "child_txt": ap.CHILD_SHOES_TXT,
             "not_found_txt": ap.NOT_FOUND_TXT,
+            "obc_src": ap.OBC_SRC_DIR,
+            "extra": ap.EXTRA_DIR,
         },
     }
 
@@ -449,6 +459,33 @@ def rename_bot(subdir):
     return {"message": msg}
 
 
+@eel.expose
+@operation
+def underscores_to_dashes(subdir):
+    """«КОД_назва__1.jpg» → «КОД-назва-1.jpg»: назва ділиться по «_» і з'єднується через «-». Рекурсивно."""
+    folder = _resolve_subdir(subdir)
+    files = [p for p in Path(folder).rglob("*") if p.is_file() and "_" in p.stem]
+    renamed, skipped = 0, 0
+    for file in files:
+        new_stem = "-".join(part for part in file.stem.split("_") if part)
+        new_path = file.with_name(new_stem + file.suffix)
+        if not new_stem or new_path == file:
+            continue
+        if new_path.exists():
+            skipped += 1
+            continue
+        try:
+            file.rename(new_path)
+            renamed += 1
+        except Exception as e:
+            skipped += 1
+            print(f"✗ {file}: {e}")
+    msg = f"Перейменовано файлів: {renamed}"
+    if skipped:
+        msg += f". Пропущено (така назва вже існує або помилка): {skipped}"
+    return {"message": msg}
+
+
 # ------------------------------------------------------------------ Step 4: групування, дзеркало
 @eel.expose
 @operation
@@ -675,6 +712,308 @@ def covers_child(max_angle, src_dir=ap.PNG_BC_DIR, dst_dir=ap.COVERS_DIR):
     return {"message": msg}
 
 
+# ------------------------------------------------------------------ відбір фото (галерея)
+THUMB_WORKERS = 8
+_THUMB_CACHE_MAX = 4000
+_thumb_cache = OrderedDict()            # (шлях, mtime, size, box) -> data URL
+_thumb_lock = threading.Lock()
+_thumb_pool = ThreadPoolExecutor(max_workers=THUMB_WORKERS)
+
+# Поточний стан галереї: папка-джерело і активна директорія (артикул).
+gallery_state = {"source": "", "active": ""}
+
+
+def _gallery_root(source):
+    return _resolve_subdir(source)
+
+
+@eel.expose
+@operation
+def gallery_dirs(source):
+    """Директорії всередині вибраної папки — по них ходить пагінація."""
+    root = _gallery_root(source)
+    gallery_state["source"] = source
+    dirs = sorted((e.name for e in os.scandir(root) if e.is_dir()), key=str.lower)
+    return {"dirs": dirs}
+
+
+@eel.expose
+@operation
+def gallery_images(source, name):
+    """Імена зображень в активній директорії."""
+    folder = os.path.join(_gallery_root(source), name)
+    if not os.path.isdir(folder):
+        raise UserError(f"Папку не знайдено: {folder}")
+    gallery_state["source"], gallery_state["active"] = source, name
+    files = [os.path.basename(p) for p in list_images(folder)]
+    files.sort(key=str.lower)
+    return {"files": files}
+
+
+def _render_thumb(path, box):
+    """Зменшена копія як data URL (WEBP з альфою). Не збільшує — лише зменшує."""
+    st = os.stat(path)
+    key = (path, st.st_mtime_ns, st.st_size, box)
+    with _thumb_lock:
+        cached = _thumb_cache.get(key)
+        if cached:
+            _thumb_cache.move_to_end(key)
+            return cached
+
+    with Image.open(path) as im:
+        im.draft("RGB", (box, box))         # JPEG: швидке декодування одразу в меншому розмірі
+        im = ImageOps.exif_transpose(im)
+        if im.mode not in ("RGB", "RGBA"):
+            im = im.convert("RGBA" if im.mode in ("P", "LA", "PA") or "transparency" in im.info else "RGB")
+        im.thumbnail((box, box), Image.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, "WEBP", quality=90, method=4)
+    url = "data:image/webp;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+    with _thumb_lock:
+        _thumb_cache[key] = url
+        while len(_thumb_cache) > _THUMB_CACHE_MAX:
+            _thumb_cache.popitem(last=False)
+    return url
+
+
+@eel.expose
+def gallery_thumbs(source, name, files, box):
+    """Мініатюри пачкою: {файл: data URL | None}. box — розмір у пікселях (з урахуванням DPI)."""
+    try:
+        folder = os.path.join(_gallery_root(source), name)
+    except UserError:
+        return {}
+    box = max(32, min(int(box), 800))
+    futures = {f: _thumb_pool.submit(_render_thumb, os.path.join(folder, f), box) for f in files}
+    # потоки рендерять, головний greenlet Eel не блокується
+    while not all(fut.done() for fut in futures.values()):
+        eel.sleep(0.01)
+    result = {}
+    for f, fut in futures.items():
+        try:
+            result[f] = fut.result()
+        except Exception as e:
+            print(f"✗ мініатюра {f}: {e}")
+            result[f] = None
+    return result
+
+
+# ---------- редактор фото (обрізка / нахил) — перезаписує оригінал з тією ж назвою
+_SAVE_FORMATS = {".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "WEBP",
+                 ".bmp": "BMP", ".tif": "TIFF", ".tiff": "TIFF"}
+
+
+def _gallery_file(source, name, file):
+    path = os.path.join(_gallery_root(source), os.path.basename(name), os.path.basename(file))
+    if not os.path.isfile(path):
+        raise UserError(f"Файл не знайдено: {path}")
+    return path
+
+
+def _has_alpha(im):
+    return im.mode in ("RGBA", "LA", "PA") or (im.mode == "P" and "transparency" in im.info)
+
+
+def _editable(im):
+    """Орієнтація з EXIF + режим, з яким працюють rotate/crop і збереження."""
+    im = ImageOps.exif_transpose(im)
+    if im.mode not in ("RGB", "RGBA", "L"):
+        im = im.convert("RGBA" if _has_alpha(im) else "RGB")
+    return im
+
+
+@eel.expose
+@operation
+def editor_open(source, name, file, box):
+    """Прев'ю для редактора (до box px) + реальний розмір оригіналу."""
+    path = _gallery_file(source, name, file)
+    box = max(200, min(int(box), 3000))
+    with Image.open(path) as src:
+        alpha = _has_alpha(src)
+        im = _editable(src)
+    width, height = im.size
+    im.thumbnail((box, box), Image.LANCZOS)
+    buf = io.BytesIO()
+    im.save(buf, "WEBP", quality=92, method=4)
+    url = "data:image/webp;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+    return {"url": url, "width": width, "height": height, "alpha": alpha}
+
+
+@eel.expose
+@operation
+def editor_save(source, name, file, quarter, angle, crop):
+    """
+    quarter — повороти на 90° за годинниковою; angle — нахил у градусах (за годинниковою);
+    crop — [x, y, w, h] у частках від повернутого кадру (з розширенням під кути).
+    """
+    path = _gallery_file(source, name, file)
+    fmt = _SAVE_FORMATS.get(Path(path).suffix.lower())
+    if not fmt:
+        raise UserError(f"Формат не підтримується для збереження: {Path(path).suffix}")
+
+    with Image.open(path) as src:
+        alpha = _has_alpha(src)
+        info = {k: src.info[k] for k in ("icc_profile", "dpi") if k in src.info}
+        im = _editable(src)
+    if alpha and im.mode != "RGBA":
+        im = im.convert("RGBA")
+
+    quarter = int(quarter) % 4
+    if quarter:
+        im = im.transpose({1: Image.ROTATE_270, 2: Image.ROTATE_180, 3: Image.ROTATE_90}[quarter])
+    angle = float(angle)
+    if abs(angle) > 0.01:
+        fill = (0, 0, 0, 0) if im.mode == "RGBA" else (255 if im.mode == "L" else (255, 255, 255))
+        im = im.rotate(-angle, resample=Image.BICUBIC, expand=True, fillcolor=fill)
+
+    x, y, w, h = (min(1.0, max(0.0, float(v))) for v in crop)
+    W, H = im.size
+    left, top = round(x * W), round(y * H)
+    right, bottom = min(W, round((x + w) * W)), min(H, round((y + h) * H))
+    if right - left < 2 or bottom - top < 2:
+        raise UserError("Занадто мала область обрізки.")
+    if (left, top, right, bottom) != (0, 0, W, H):
+        im = im.crop((left, top, right, bottom))
+
+    if fmt == "JPEG":
+        if im.mode == "RGBA":
+            bg = Image.new("RGB", im.size, (255, 255, 255))
+            bg.paste(im, mask=im.getchannel("A"))
+            im = bg
+        info.update(quality=95, subsampling=0, optimize=True)
+    elif fmt == "WEBP":
+        info.update(quality=95, method=4)
+
+    tmp = path + ".tmp"
+    try:
+        im.save(tmp, fmt, **info)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    return {"message": f"Збережено: {os.path.basename(path)} ({im.width}×{im.height})",
+            "width": im.width, "height": im.height}
+
+
+@eel.expose
+@operation
+def gallery_apply(source, selection):
+    """
+    selection: {директорія: {"main": файл | None, "extra": [файли]}}.
+    Основне фото → obc_src/<директорія><розширення> (старе з такою ж назвою замінюється).
+    Додаткові → додаткові/<директорія>/<файл>.
+    """
+    base = require_base()
+    root = _gallery_root(source)
+    obc = ensure_dir(os.path.join(base, ap.OBC_SRC_DIR))
+    extra_root = ensure_dir(os.path.join(base, ap.EXTRA_DIR))
+    if _is_inside(root, obc) or _is_inside(root, extra_root):
+        raise UserError(f"Папка-джерело не може бути {ap.OBC_SRC_DIR} або {ap.EXTRA_DIR}.")
+
+    jobs = []  # (директорія, вид, шлях-джерело)
+    for name, sel in selection.items():
+        name = os.path.basename(name)
+        folder = os.path.join(root, name)
+        if sel.get("main"):
+            jobs.append((name, "main", os.path.join(folder, os.path.basename(sel["main"]))))
+        for file in sel.get("extra") or []:
+            jobs.append((name, "extra", os.path.join(folder, os.path.basename(file))))
+    if not jobs:
+        raise UserError("Нічого не вибрано.")
+
+    obc_by_stem = {}
+    for file in list_images(obc):
+        obc_by_stem.setdefault(Path(file).stem.casefold(), []).append(file)
+
+    progress = Progress(len(jobs))
+    mains, extras, done_dirs, failed = 0, 0, set(), []
+    for name, kind, src in jobs:
+        progress.step(f"{name}: {os.path.basename(src)}")
+        try:
+            if not os.path.isfile(src):
+                raise FileNotFoundError(src)
+            if kind == "main":
+                for old in obc_by_stem.pop(name.casefold(), []):
+                    os.unlink(old)       # попереднє основне фото цього артикулу (будь-яке розширення)
+                move_file(src, os.path.join(obc, name + Path(src).suffix.lower()))
+                mains += 1
+            else:
+                move_file(src, os.path.join(extra_root, name, os.path.basename(src)))
+                extras += 1
+            done_dirs.add(name)
+        except Exception as e:
+            failed.append(f"{name}/{os.path.basename(src)}")
+            print(f"✗ {src}: {e}")
+    progress.finish()
+
+    msg = f"Перенесено: основних {mains} → {ap.OBC_SRC_DIR}, додаткових {extras} → {ap.EXTRA_DIR}"
+    if failed:
+        msg += f". Не вдалося: {', '.join(failed[:10])}" + (" …" if len(failed) > 10 else "")
+    return {"message": msg, "done": sorted(done_dirs), "failed": failed}
+
+
+# ------------------------------------------------------------------ пакування
+_STORED_EXT = IMAGE_EXTENSIONS | {".zip", ".xlsx", ".xlsm"}   # уже стиснуті — не тиснемо вдруге
+
+
+def _zip_folder(folder, zip_path, progress):
+    """Пакує папку в zip разом з нею самою як коренем архіву."""
+    files = [p for p in Path(folder).rglob("*") if p.is_file()]
+    parent = Path(folder).parent
+    tmp = zip_path + ".tmp"
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        zf.write(folder, Path(folder).name)          # запис самої папки — щоб була і порожня
+        for p in files:
+            ctype = zipfile.ZIP_STORED if p.suffix.lower() in _STORED_EXT else zipfile.ZIP_DEFLATED
+            zf.write(p, p.relative_to(parent).as_posix(), compress_type=ctype)
+            progress.step(f"{os.path.basename(zip_path)}: {p.name}")
+    os.replace(tmp, zip_path)
+    return len(files)
+
+
+@eel.expose
+@operation
+def pack_archives():
+    """
+    1) <Основна>/<назва Основної>/: Excel + усі папки з «додаткові» → <назва Основної>.zip
+    2) «обкладинки» → обкладинки.zip
+    Архіви лягають в Основну директорію; наявні перезаписуються.
+    """
+    base = require_base()
+    excel = require_excel()
+    name = os.path.basename(os.path.normpath(base))
+    extra = os.path.join(base, ap.EXTRA_DIR)
+    covers = os.path.join(base, ap.COVERS_DIR)
+
+    extra_dirs = sorted(e.path for e in os.scandir(extra) if e.is_dir()) if os.path.isdir(extra) else []
+    if not extra_dirs:
+        raise UserError(f"У папці «{ap.EXTRA_DIR}» немає жодної папки.")
+    if not os.path.isdir(covers) or not any(Path(covers).rglob("*")):
+        raise UserError(f"Папка «{ap.COVERS_DIR}» порожня.")
+
+    if name.casefold() in {s.casefold() for s in ap.STRUCTURE + [ap.BACKUPS_DIR]}:
+        raise UserError(f"Основна директорія називається як робоча папка «{name}» — пакування скасовано.")
+
+    Progress.set(2, f"Збираю папку {name}...")
+    pack_dir = os.path.join(base, name)
+    if os.path.isdir(pack_dir):
+        shutil.rmtree(pack_dir)                  # збирається заново щоразу
+    os.makedirs(pack_dir)
+    shutil.copy2(excel, os.path.join(pack_dir, os.path.basename(excel)))
+    for d in extra_dirs:
+        shutil.copytree(d, os.path.join(pack_dir, os.path.basename(d)))
+
+    total = sum(1 for p in Path(pack_dir).rglob("*") if p.is_file()) + \
+        sum(1 for p in Path(covers).rglob("*") if p.is_file())
+    progress = Progress(total, start=10, end=99)
+    n_pack = _zip_folder(pack_dir, os.path.join(base, f"{name}.zip"), progress)
+    n_covers = _zip_folder(covers, os.path.join(base, f"{ap.COVERS_DIR}.zip"), progress)
+    progress.finish("Готово")
+    return {"message": f"Створено {name}.zip ({n_pack} файлів, папок з «{ap.EXTRA_DIR}»: {len(extra_dirs)}) "
+                       f"і {ap.COVERS_DIR}.zip ({n_covers} файлів)"}
+
+
 # ------------------------------------------------------------------ бекап та очищення
 def _check_safe_to_clean(base):
     home = os.path.expanduser("~")
@@ -759,6 +1098,6 @@ if __name__ == "__main__":
         "index.html",
         mode="edge",
         port=0,
-        size=(1200, 900),
-        cmdline_args=["--disable-http-cache", "--window-size=1200,900"],
+        size=(1760, 940),
+        cmdline_args=["--disable-http-cache", "--window-size=1760,940"],
     )

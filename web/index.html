@@ -45,6 +45,8 @@
               <li><b data-folder="bot">бот/</b><span>фото з бота, підпапка на артикул; ці артикули не парсяться в п.3</span></li>
               <li><b data-folder="bad">bad/</b><span>брак, винесений з png_bc за списком bad.txt</span></li>
               <li><b data-folder="backups">_backups/</b><span>бекапи: Excel + png_bc</span></li>
+              <li><b data-folder="obc_src">obc_src/</b><span>п.6 — основні фото (фіолетові), назва файлу = назва папки-артикулу</span></li>
+              <li><b data-folder="extra">додаткові/</b><span>п.6 — додаткові фото (оранжеві), підпапка на артикул; потрапляє в архів п.7</span></li>
               <li class="file"><b data-folder="child_txt">child_shoes.txt</b><span>список дитячого взуття (п.2)</span></li>
               <li class="file"><b data-folder="bad_txt">bad.txt</b><span>артикули браку, по одному на рядок (створюєте самі)</span></li>
               <li class="file"><b data-folder="not_found_txt">not_found.txt</b><span>не знайдені артикули</span></li>
@@ -102,13 +104,20 @@
           <button class="wide" onclick="run('build_child_list')">Сформувати child_shoes.txt</button>
         </section>
 
-        <section class="card danger-zone">
+        <section class="card pack-zone">
           <div class="card-head">
-            <span class="step warn">!</span>
-            <h2>Бекап і очищення</h2>
-            <span class="hint" data-tip="Копіює Excel і переносить png_bc у _backups/&lt;дата&gt;, потім видаляє все інше в Основній директорії й створює порожню структуру.">?</span>
+            <span class="step">7</span>
+            <h2>Пакування</h2>
+            <span class="hint" data-tip="Створює папку з назвою Основної директорії, копіює в неї Excel і всі папки з «додаткові», пакує її в zip. Окремо пакує в zip папку «обкладинки».">?</span>
           </div>
-          <button class="wide danger" onclick="backupAndClean()">Зробити бекап і очистити</button>
+          <ul class="pack-list">
+            <li><span class="pack-ico">🗂</span><b id="packName">&lt;Основна директорія&gt;.zip</b><span>Excel + додаткові/*</span></li>
+            <li><span class="pack-ico">🖼</span><b>обкладинки.zip</b><span>папка обкладинки</span></li>
+          </ul>
+          <button class="wide accent" onclick="packArchives()">
+            <svg viewBox="0 0 24 24"><path d="M4 7h16v13H4zM2 3h20v4H2zM10 11h4"/></svg>
+            Створити архіви
+          </button>
         </section>
       </aside>
 
@@ -187,6 +196,16 @@
               <div class="row tight">
                 <select class="dir-select grow" id="renameBotDir" data-default="bot"></select>
                 <button onclick="runWithDir('rename_bot', 'renameBotDir')">Переназвати</button>
+              </div>
+            </div>
+            <div class="tool">
+              <div class="tool-title">
+                «_» → «-»
+                <span class="hint" data-tip="Усі файли папки (разом з підпапками): назва ділиться по «_» і з'єднується через «-». «КОД_назва_1.jpg» → «КОД-назва-1.jpg». Якщо така назва вже є, файл пропускається.">?</span>
+              </div>
+              <div class="row tight">
+                <select class="dir-select grow" id="dashBotDir" data-default="bot"></select>
+                <button onclick="runWithDir('underscores_to_dashes', 'dashBotDir')">Замінити</button>
               </div>
             </div>
             <div class="tool">
@@ -271,6 +290,62 @@
           </div>
         </section>
       </div>
+      <!-- ============ Третя колонка: відбір фото ============ -->
+      <div class="column gallery-col">
+        <section class="card gallery-card">
+          <div class="card-head">
+            <span class="step">6</span>
+            <h2>Відбір фото</h2>
+            <span class="hint" data-tip="ЛКМ — основне фото (фіолетове, одне на папку) → obc_src/&lt;папка&gt;. ПКМ — додаткові (оранжеві, кілька) → додаткові/&lt;папка&gt;/. Перемикання папок — стрілки ← → на клавіатурі.">?</span>
+            <button class="icon-only ghost push" onclick="galleryReload()" title="Перечитати папку">
+              <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>
+            </button>
+          </div>
+
+          <div class="row tight">
+            <select class="dir-select grow" id="gallerySrc" data-default="downloaded"></select>
+          </div>
+
+          <div class="pager" id="pager">
+            <button class="pager-btn" id="pagerPrev" onclick="galleryStep(-1)" title="Попередня (←)">
+              <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
+            </button>
+            <div class="pager-info">
+              <div class="pager-name" id="pagerName">—</div>
+              <div class="pager-meta">
+                <span id="pagerPos">0 / 0</span>
+                <span class="pager-files" id="pagerFiles"></span>
+                <span class="pager-check main" id="pagerMain" title="Основне фото вибрано" hidden><svg viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-7"/></svg></span>
+                <span class="pager-check extra" id="pagerExtra" hidden><svg viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-7"/></svg></span>
+              </div>
+            </div>
+            <button class="pager-btn" id="pagerNext" onclick="galleryStep(1)" title="Наступна (→)">
+              <svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>
+            </button>
+          </div>
+          <div class="pager-track" id="pagerTrack"><div class="pager-track-fill" id="pagerTrackFill"></div></div>
+
+          <div class="thumbs" id="thumbs" tabindex="-1">
+            <div class="thumbs-empty" id="thumbsEmpty">Виберіть папку — тут з'являться фото</div>
+          </div>
+
+          <div class="legend">
+            <span><i class="sw main"></i>ЛКМ — основне → obc_src</span>
+            <span><i class="sw extra"></i>ПКМ — додаткові → додаткові</span>
+          </div>
+
+          <div class="gallery-foot">
+            <div class="sel-summary" id="selSummary">Нічого не вибрано</div>
+            <button class="ghost small-btn" onclick="galleryClearSelection()" title="Скинути весь вибір">
+              <svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>
+            </button>
+            <button class="accent" onclick="galleryApply()">
+              <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+              Перенести вибране
+            </button>
+          </div>
+        </section>
+      </div>
     </main>
 
     <footer class="statusbar">
@@ -299,7 +374,40 @@
       </div>
     </div>
 
+    <div class="modal-backdrop" id="editor" hidden>
+      <div class="editor">
+        <div class="editor-head">
+          <b id="editorName"></b>
+          <span class="editor-size" id="editorSize"></span>
+          <button class="icon-only" title="Зберегти і закрити (Esc)" onclick="editorClose(true)">✕</button>
+        </div>
+        <div class="editor-stage" id="editorStage">
+          <canvas id="editorCanvas"></canvas>
+          <div class="crop" id="editorCrop" hidden>
+            <i data-h="n"></i><i data-h="s"></i><i data-h="e"></i><i data-h="w"></i>
+            <i data-h="nw"></i><i data-h="ne"></i><i data-h="sw"></i><i data-h="se"></i>
+          </div>
+          <div class="editor-loading" id="editorLoading">Завантаження…</div>
+        </div>
+        <div class="editor-tools">
+          <button class="small-btn" title="Повернути на 90° проти годинникової" onclick="editorQuarter(-1)">⟲</button>
+          <button class="small-btn" title="Повернути на 90° за годинниковою" onclick="editorQuarter(1)">⟳</button>
+          <label class="editor-angle">
+            <span>Нахил</span>
+            <input type="range" id="editorAngle" min="-45" max="45" step="0.1" value="0" />
+            <input type="number" id="editorAngleNum" min="-45" max="45" step="0.1" value="0" />
+            <span>°</span>
+          </label>
+          <button class="ghost" title="Скинути нахил, поворот і обрізку" onclick="editorReset()">Скинути</button>
+          <span class="spacer"></span>
+          <button class="ghost" title="Закрити без збереження" onclick="editorClose(false)">Скасувати</button>
+          <button class="accent" title="Зберегти поверх оригіналу (Enter)" onclick="editorClose(true)">Зберегти</button>
+        </div>
+      </div>
+    </div>
+
     <div class="floating-tip" id="floatingTip" role="tooltip"></div>
+    <div class="preview-pop" id="previewPop"><img id="previewImg" alt="" /><span id="previewName"></span></div>
 
     <script src="app.js"></script>
   </body>
