@@ -281,7 +281,7 @@ document.addEventListener("mouseout", (e) => {
 
 // ------------------------------------------------------------------ відбір фото (галерея)
 const THUMB_BOX = 90;      // мініатюра, CSS px
-const PREVIEW_BOX = 240;   // прев'ю при наведенні, CSS px
+const CAPTION_NAME_MAX = 12; // довші назви під мініатюрою не показуємо (лише розмір)
 const THUMB_BATCH = 24;
 const THUMB_CACHE_MAX = 3000;
 
@@ -291,6 +291,7 @@ const gallery = {
   index: 0,
   active: "",               // назва активної директорії — потрібна при перенесенні
   files: [],
+  sizes: {},                // файл -> [ширина, висота]
   els: new Map(),           // файл -> .thumb активної директорії
   selection: new Map(),     // директорія -> { main: файл | null, extra: Set<файл> }
   token: 0,                 // відсікає застарілі відповіді при швидкому гортанні
@@ -333,7 +334,7 @@ function galleryStep(delta) {
 }
 
 async function galleryShow(index) {
-  hidePreview();
+  clearTimeout(hoverTimer);
   const token = ++gallery.token;
   thumbQueue.length = 0;
   thumbObserver.disconnect();
@@ -361,6 +362,7 @@ async function galleryShow(index) {
     return;
   }
   gallery.files = res.files;
+  gallery.sizes = res.sizes || {};
   renderThumbs();
   renderPager();
 }
@@ -396,7 +398,8 @@ function renderThumbs() {
     const el = document.createElement("div");
     el.className = "thumb";
     el.dataset.file = file;
-    el.innerHTML = `<img alt="" decoding="async" /><span class="badge"></span>`;
+    el.innerHTML = `<div class="pic"><img alt="" decoding="async" /></div><span class="cap"></span><span class="badge"></span>`;
+    setCaption(el, file);
     const url = thumbCache.get(cacheKey(gallery.active, file, px));
     if (url) setThumb(el, url);
     else thumbObserver.observe(el);
@@ -411,9 +414,25 @@ function renderThumbs() {
 
 function setThumb(el, url) {
   if (!url) return el.classList.add("ready", "broken");
-  const img = el.firstElementChild;
+  const img = el.querySelector("img");
   img.onload = () => el.classList.add("ready");
   img.src = url;
+}
+
+// Під мініатюрою: назва (без розширення, якщо не довша за CAPTION_NAME_MAX) і розмір у пікселях.
+function setCaption(el, file) {
+  const size = gallery.sizes[file];
+  const sizeText = size ? `${size[0]}×${size[1]}` : "";
+  const stem = file.replace(/\.[^.]+$/, "");
+  const cap = el.querySelector(".cap");
+  cap.replaceChildren();
+  if (stem.length <= CAPTION_NAME_MAX) {
+    const b = document.createElement("b");
+    b.textContent = stem;
+    cap.append(b);
+  }
+  cap.append(sizeText);
+  el.title = sizeText ? `${file} — ${sizeText}` : file;
 }
 
 // Мініатюри вантажаться лише для видимих (+ запас) плиток, пачками.
@@ -522,301 +541,325 @@ thumbsBox.addEventListener("contextmenu", (e) => {
   if (el && !busy) toggleExtra(el.dataset.file);
 });
 
-// ---------- прев'ю при наведенні
-const previewPop = $("#previewPop");
-let previewFor = null;
-let previewTimer = null;
-
-thumbsBox.addEventListener("mouseover", (e) => {
-  const el = e.target.closest(".thumb");
-  if (!el || el === previewFor) return;
-  previewFor = el;
-  clearTimeout(previewTimer);
-  previewTimer = setTimeout(() => showPreview(el), 140);
-});
-// Ховаємо, щойно курсор залишив плитку (зокрема в проміжок між плитками).
-thumbsBox.addEventListener("mouseout", (e) => {
-  const el = e.target.closest(".thumb");
-  if (el && !el.contains(e.relatedTarget)) hidePreview();
-});
-thumbsBox.addEventListener("mouseleave", hidePreview);
-thumbsBox.addEventListener("scroll", hidePreview, { passive: true });
-window.addEventListener("blur", hidePreview);
-
-async function showPreview(el) {
-  const file = el.dataset.file;
-  const dir = gallery.active;
-  const px = pxBox(PREVIEW_BOX);
-  const key = cacheKey(dir, file, px);
-  let url = thumbCache.get(key);
-  if (!url) {
-    const res = await eel.gallery_thumbs(gallery.source, dir, [file], px)();
-    url = res[file];
-    if (url) cachePut(key, url);
+// ---------- редактор фото: обрізка / нахил / поворот, збереження поверх оригіналу.
+// Один клас на два місця: велике вікно (СКМ по плитці) і панель праворуч (наведення + автозбереження).
+class ImageEditor {
+  constructor(root, { pad = 28, onChange = null } = {}) {
+    const r = (name) => root.querySelector(`[data-r="${name}"]`);
+    Object.assign(this, {
+      stage: r("stage"), canvas: r("canvas"), cropEl: r("crop"), loading: r("loading"),
+      nameEl: r("name"), sizeEl: r("size"), angleEl: r("angle"), angleNumEl: r("angleNum"),
+      pad,                    // відступ кадру від країв сцени — щоб було за що хапати рамку
+      onChange,               // викликається після кожної зміни користувачем
+      source: "", dir: "", file: "",
+      img: null,              // прев'ю (зменшене)
+      W: 0, H: 0,             // розмір оригіналу
+      alpha: false,
+      quarter: 0,             // повороти на 90° за годинниковою
+      angle: 0,               // нахил, градуси за годинниковою
+      crop: [0, 0, 1, 1],     // x, y, w, h — частки від повернутого кадру
+      view: { left: 0, top: 0, w: 0, h: 0 }, // де намальований кадр у сцені, CSS px
+      saving: false,
+      drag: null,
+      token: 0,               // відсікає застарілі завантаження
+    });
+    this.bindAngle();
+    this.bindDrag();
+    new ResizeObserver(() => this.img && this.layout()).observe(this.stage);
   }
-  if (previewFor !== el || !el.isConnected || !url) return;
 
-  $("#previewImg").src = url;
-  $("#previewName").textContent = file;
-  const r = el.getBoundingClientRect();
-  const w = previewPop.offsetWidth, h = previewPop.offsetHeight;
-  let left = r.left - w - 12;                       // галерея справа — прев'ю ліворуч
-  if (left < 10) left = Math.min(r.right + 12, window.innerWidth - w - 10);
-  const top = Math.max(10, Math.min(r.top + r.height / 2 - h / 2, window.innerHeight - h - 10));
-  previewPop.style.transform = `translate(${left}px, ${top}px)`;
-  previewPop.classList.add("show");
-}
-
-function hidePreview() {
-  clearTimeout(previewTimer);
-  previewFor = null;
-  previewPop.classList.remove("show");
-}
-
-// ---------- редактор фото: СКМ по плитці — обрізка / нахил, збереження поверх оригіналу
-const editor = {
-  open: false,
-  saving: false,
-  dir: "",
-  file: "",
-  img: null,                // прев'ю (зменшене)
-  W: 0, H: 0,               // розмір оригіналу
-  alpha: false,
-  quarter: 0,               // повороти на 90° за годинниковою
-  angle: 0,                 // нахил, градуси за годинниковою
-  crop: [0, 0, 1, 1],       // x, y, w, h — частки від повернутого кадру
-  view: { left: 0, top: 0, w: 0, h: 0 }, // де намальований кадр у сцені, CSS px
-};
-const editorStage = $("#editorStage");
-const editorCanvas = $("#editorCanvas");
-const editorCropEl = $("#editorCrop");
-const EDITOR_PAD = 28;      // відступ кадру від країв сцени — щоб було за що хапати рамку
-
-// Повернутий кадр (у пікселях прев'ю) з розширенням під кути, як у PIL rotate(expand=True).
-function editorFrame() {
-  const { naturalWidth: iw, naturalHeight: ih } = editor.img;
-  const [bw, bh] = editor.quarter % 2 ? [ih, iw] : [iw, ih];
-  const a = (editor.angle * Math.PI) / 180;
-  const c = Math.abs(Math.cos(a)), s = Math.abs(Math.sin(a));
-  return { iw, ih, bw, bh, FW: bw * c + bh * s, FH: bw * s + bh * c };
-}
-
-// Найбільший прямокутник з пропорціями фото, що вміщується в нахилене фото — без порожніх кутів.
-function editorAutoCrop() {
-  const { bw, bh, FW, FH } = editorFrame();
-  const k = Math.min(bw / FW, bh / FH);
-  const w = Math.min(1, (k * bw) / FW), h = Math.min(1, (k * bh) / FH);
-  editor.crop = [(1 - w) / 2, (1 - h) / 2, w, h];
-}
-
-function editorDirty() {
-  const [x, y, w, h] = editor.crop;
-  const eps = 0.001;
-  return editor.quarter % 4 !== 0 || Math.abs(editor.angle) > 0.01 ||
-    x > eps || y > eps || w < 1 - eps || h < 1 - eps;
-}
-
-function editorLayout() {
-  if (!editor.img) return;
-  const { iw, ih, FW, FH } = editorFrame();
-  const sw = editorStage.clientWidth, sh = editorStage.clientHeight;
-  const k = Math.max(0.01, Math.min((sw - EDITOR_PAD * 2) / FW, (sh - EDITOR_PAD * 2) / FH));
-  const w = FW * k, h = FH * k;
-  editor.view = { left: (sw - w) / 2, top: (sh - h) / 2, w, h };
-
-  const dpr = window.devicePixelRatio || 1;
-  editorCanvas.width = Math.round(w * dpr);
-  editorCanvas.height = Math.round(h * dpr);
-  Object.assign(editorCanvas.style, {
-    left: editor.view.left + "px", top: editor.view.top + "px", width: w + "px", height: h + "px",
-  });
-  const ctx = editorCanvas.getContext("2d");
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.clearRect(0, 0, editorCanvas.width, editorCanvas.height);
-  ctx.setTransform(dpr * k, 0, 0, dpr * k, 0, 0);
-  if (!editor.alpha) {
-    ctx.fillStyle = "#fff";         // так само заповнюються кути при збереженні
-    ctx.fillRect(0, 0, FW, FH);
+  // Повернутий кадр (у пікселях прев'ю) з розширенням під кути, як у PIL rotate(expand=True).
+  frame() {
+    const { naturalWidth: iw, naturalHeight: ih } = this.img;
+    const [bw, bh] = this.quarter % 2 ? [ih, iw] : [iw, ih];
+    const a = (this.angle * Math.PI) / 180;
+    const c = Math.abs(Math.cos(a)), s = Math.abs(Math.sin(a));
+    return { iw, ih, bw, bh, FW: bw * c + bh * s, FH: bw * s + bh * c };
   }
-  ctx.imageSmoothingQuality = "high";
-  ctx.translate(FW / 2, FH / 2);
-  ctx.rotate(((editor.quarter * 90 + editor.angle) * Math.PI) / 180);
-  ctx.drawImage(editor.img, -iw / 2, -ih / 2, iw, ih);
-  editorPaintCrop();
-}
 
-function editorPaintCrop() {
-  const [x, y, w, h] = editor.crop;
-  const v = editor.view;
-  Object.assign(editorCropEl.style, {
-    left: v.left + x * v.w + "px", top: v.top + y * v.h + "px",
-    width: w * v.w + "px", height: h * v.h + "px",
-  });
-  const { FW, FH, iw } = editorFrame();
-  const r = editor.W / iw;  // прев'ю → оригінал
-  const outW = Math.round(w * FW * r), outH = Math.round(h * FH * r);
-  $("#editorSize").textContent = editorDirty()
-    ? `${editor.W}×${editor.H} → ${outW}×${outH}`
-    : `${editor.W}×${editor.H}`;
-}
-
-async function editorOpen(file) {
-  if (busy || editor.open) return;
-  hidePreview();
-  Object.assign(editor, {
-    open: true, dir: gallery.active, file, img: null,
-    quarter: 0, angle: 0, crop: [0, 0, 1, 1],
-  });
-  editorSetAngleInputs(0);
-  $("#editorName").textContent = file;
-  $("#editorSize").textContent = "";
-  $("#editorLoading").textContent = "Завантаження…";
-  $("#editorLoading").hidden = false;
-  editorCropEl.hidden = true;
-  editorCanvas.width = editorCanvas.height = 0;
-  $("#editor").hidden = false;
-
-  const box = Math.round(Math.max(editorStage.clientWidth, editorStage.clientHeight) * (window.devicePixelRatio || 1));
-  const res = await eel.editor_open(gallery.source, editor.dir, file, box)();
-  if (!editor.open || editor.file !== file) return;
-  if (!res.ok) {
-    toast(res.error, "err");
-    return editorClose(false);
+  // Найбільший прямокутник з пропорціями фото, що вміщується в нахилене фото — без порожніх кутів.
+  autoCrop() {
+    const { bw, bh, FW, FH } = this.frame();
+    const k = Math.min(bw / FW, bh / FH);
+    const w = Math.min(1, (k * bw) / FW), h = Math.min(1, (k * bh) / FH);
+    this.crop = [(1 - w) / 2, (1 - h) / 2, w, h];
   }
-  const img = new Image();
-  img.onload = () => {
-    if (!editor.open || editor.file !== file) return;
-    Object.assign(editor, { img, W: res.width, H: res.height, alpha: res.alpha });
-    $("#editorLoading").hidden = true;
-    editorCropEl.hidden = false;
-    editorLayout();
-  };
-  img.src = res.url;
-}
 
-async function editorClose(save) {
-  if (!editor.open || editor.saving) return;
-  if (save && editor.img && editorDirty()) {
-    editor.saving = true;
-    $("#editorLoading").textContent = "Збереження…";
-    $("#editorLoading").hidden = false;
-    const res = await eel.editor_save(gallery.source, editor.dir, editor.file,
-      editor.quarter, editor.angle, editor.crop)();
-    editor.saving = false;
-    $("#editorLoading").hidden = true;
-    if (!res.ok) return toast(res.error, "err"); // правки не губимо — редактор лишається відкритим
-    toast(res.message);
-    editorRefreshThumb(editor.dir, editor.file);
+  dirty() {
+    if (!this.img) return false;
+    const [x, y, w, h] = this.crop;
+    const eps = 0.001;
+    return this.quarter % 4 !== 0 || Math.abs(this.angle) > 0.01 ||
+      x > eps || y > eps || w < 1 - eps || h < 1 - eps;
   }
-  editor.open = false;
-  editor.img = null;
-  $("#editor").hidden = true;
+
+  layout() {
+    if (!this.img) return;
+    const { iw, ih, FW, FH } = this.frame();
+    const sw = this.stage.clientWidth, sh = this.stage.clientHeight;
+    const k = Math.max(0.01, Math.min((sw - this.pad * 2) / FW, (sh - this.pad * 2) / FH));
+    const w = FW * k, h = FH * k;
+    this.view = { left: (sw - w) / 2, top: (sh - h) / 2, w, h };
+
+    const dpr = window.devicePixelRatio || 1;
+    this.canvas.width = Math.round(w * dpr);
+    this.canvas.height = Math.round(h * dpr);
+    Object.assign(this.canvas.style, {
+      left: this.view.left + "px", top: this.view.top + "px", width: w + "px", height: h + "px",
+    });
+    const ctx = this.canvas.getContext("2d");
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    ctx.setTransform(dpr * k, 0, 0, dpr * k, 0, 0);
+    if (!this.alpha) {
+      ctx.fillStyle = "#fff";         // так само заповнюються кути при збереженні
+      ctx.fillRect(0, 0, FW, FH);
+    }
+    ctx.imageSmoothingQuality = "high";
+    ctx.translate(FW / 2, FH / 2);
+    ctx.rotate(((this.quarter * 90 + this.angle) * Math.PI) / 180);
+    ctx.drawImage(this.img, -iw / 2, -ih / 2, iw, ih);
+    this.paintCrop();
+  }
+
+  paintCrop() {
+    const [x, y, w, h] = this.crop;
+    const v = this.view;
+    Object.assign(this.cropEl.style, {
+      left: v.left + x * v.w + "px", top: v.top + y * v.h + "px",
+      width: w * v.w + "px", height: h * v.h + "px",
+    });
+    const { FW, FH, iw } = this.frame();
+    const r = this.W / iw;  // прев'ю → оригінал
+    const outW = Math.round(w * FW * r), outH = Math.round(h * FH * r);
+    this.sizeEl.textContent = this.dirty() ? `${this.W}×${this.H} → ${outW}×${outH}` : `${this.W}×${this.H}`;
+  }
+
+  showLoading(text) {
+    this.loading.textContent = text;
+    this.loading.hidden = false;
+  }
+
+  // quiet: старий кадр лишається на екрані, доки не прийде новий (перечитування після збереження).
+  async load(source, dir, file, { quiet = false } = {}) {
+    const token = ++this.token;
+    Object.assign(this, { source, dir, file, quarter: 0, angle: 0, crop: [0, 0, 1, 1] });
+    this.setAngleInputs(0);
+    this.nameEl.textContent = file;
+    this.nameEl.title = file;
+    if (!quiet) {
+      this.img = null;
+      this.sizeEl.textContent = "";
+      this.showLoading("Завантаження…");
+      this.cropEl.hidden = true;
+      this.canvas.width = this.canvas.height = 0;
+    }
+
+    const box = Math.round(Math.max(this.stage.clientWidth, this.stage.clientHeight) * (window.devicePixelRatio || 1));
+    const res = await eel.editor_open(source, dir, file, box)();
+    if (token !== this.token) return false;
+    if (!res.ok) {
+      toast(res.error, "err");
+      this.img = null;
+      this.cropEl.hidden = true;
+      this.canvas.width = this.canvas.height = 0;
+      this.showLoading("Не вдалося відкрити");
+      return false;
+    }
+    const img = new Image();
+    img.src = res.url;
+    try {
+      await img.decode();
+    } catch (e) {}
+    if (token !== this.token) return false;
+    Object.assign(this, { img, W: res.width, H: res.height, alpha: res.alpha });
+    this.loading.hidden = true;
+    this.cropEl.hidden = false;
+    this.layout();
+    return true;
+  }
+
+  clear(text = "") {
+    this.token++;
+    Object.assign(this, { source: "", dir: "", file: "", img: null, drag: null });
+    this.nameEl.textContent = "—";
+    this.nameEl.title = "";
+    this.sizeEl.textContent = "";
+    this.cropEl.hidden = true;
+    this.canvas.width = this.canvas.height = 0;
+    this.setAngleInputs(0);
+    if (text) this.showLoading(text);
+  }
+
+  async save() {
+    this.saving = true;
+    this.showLoading("Збереження…");
+    try {
+      return await eel.editor_save(this.source, this.dir, this.file, this.quarter, this.angle, this.crop)();
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    } finally {
+      this.saving = false;
+      this.loading.hidden = true;
+    }
+  }
+
+  changed() {
+    this.layout();
+    if (this.onChange) this.onChange();
+  }
+
+  quarterTurn(delta) {
+    if (!this.img || this.saving) return;
+    this.quarter = (this.quarter + delta + 4) % 4;
+    this.autoCrop();
+    this.changed();
+  }
+
+  setAngleInputs(v) {
+    this.angleEl.value = v;
+    this.angleNumEl.value = v;
+  }
+
+  setAngle(v) {
+    if (!this.img || this.saving) return this.setAngleInputs(this.angle);
+    v = Math.max(-45, Math.min(45, Number(v) || 0));
+    this.angle = Math.round(v * 10) / 10;
+    this.autoCrop();
+    this.changed();
+  }
+
+  reset() {
+    if (!this.img || this.saving) return;
+    Object.assign(this, { quarter: 0, angle: 0, crop: [0, 0, 1, 1] });
+    this.setAngleInputs(0);
+    this.changed();
+  }
+
+  bindAngle() {
+    this.angleEl.addEventListener("input", (e) => {
+      this.angleNumEl.value = e.target.value;
+      this.setAngle(e.target.value);
+    });
+    this.angleEl.addEventListener("dblclick", () => {
+      this.setAngleInputs(0);
+      this.setAngle(0);
+    });
+    this.angleNumEl.addEventListener("input", (e) => {
+      this.angleEl.value = e.target.value;
+      this.setAngle(e.target.value);
+    });
+  }
+
+  // Перетягування: ручки — краї/кути, всередині рамки — зсув, поза рамкою — нова рамка.
+  bindDrag() {
+    const stage = this.stage;
+    stage.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || !this.img || this.saving) return;
+      const v = this.view;
+      const mode = e.target.dataset.h || (e.target === this.cropEl ? "move" : "new");
+      const rect = stage.getBoundingClientRect();
+      const px = (e.clientX - rect.left - v.left) / v.w;
+      const py = (e.clientY - rect.top - v.top) / v.h;
+      this.drag = { mode, sx: e.clientX, sy: e.clientY, start: [...this.crop],
+        ax: Math.max(0, Math.min(1, px)), ay: Math.max(0, Math.min(1, py)) };
+      stage.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+
+    stage.addEventListener("pointermove", (e) => {
+      const d = this.drag;
+      if (!d) return;
+      const v = this.view;
+      const dx = (e.clientX - d.sx) / v.w, dy = (e.clientY - d.sy) / v.h;
+      const minW = 16 / v.w, minH = 16 / v.h;
+      const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
+      let [x, y, w, h] = d.start;
+      let r = x + w, b = y + h;
+      const m = d.mode;
+
+      if (m === "move") {
+        x = clamp(x + dx, 0, 1 - w);
+        y = clamp(y + dy, 0, 1 - h);
+        this.crop = [x, y, w, h];
+      } else if (m === "new") {
+        const cx = clamp(d.ax + dx, 0, 1), cy = clamp(d.ay + dy, 0, 1);
+        this.crop = [Math.min(d.ax, cx), Math.min(d.ay, cy), Math.abs(cx - d.ax), Math.abs(cy - d.ay)];
+      } else {
+        if (m.includes("w")) x = clamp(x + dx, 0, r - minW);
+        if (m.includes("e")) r = clamp(r + dx, x + minW, 1);
+        if (m.includes("n")) y = clamp(y + dy, 0, b - minH);
+        if (m.includes("s")) b = clamp(b + dy, y + minH, 1);
+        this.crop = [x, y, r - x, b - y];
+      }
+      this.paintCrop();
+    });
+
+    const end = () => {
+      const d = this.drag;
+      if (!d) return;
+      this.drag = null;
+      const [, , w, h] = this.crop;
+      if (d.mode === "new" && (w * this.view.w < 16 || h * this.view.h < 16)) {
+        this.crop = d.start; // випадковий клік — рамку не чіпаємо
+        this.paintCrop();
+        return;
+      }
+      if (this.crop.some((n, i) => n !== d.start[i])) this.changed();
+    };
+    stage.addEventListener("pointerup", end);
+    stage.addEventListener("pointercancel", end);
+  }
 }
 
-function editorRefreshThumb(dir, file) {
-  const prefix = `${gallery.source}/${dir}/${file}@`;
+// Після збереження / відміни: нові мініатюри, підпис з розміром, перечитаний кадр у панелі.
+async function afterImageSaved(source, dir, file, res) {
+  if (source === gallery.source && dir === gallery.active && res.width) {
+    gallery.sizes[file] = [res.width, res.height];
+    const el = gallery.els.get(file);
+    if (el) setCaption(el, file);
+  }
+  refreshThumb(source, dir, file);
+  if (dock.source === source && dock.dir === dir && dock.file === file) {
+    await dock.load(source, dir, file, { quiet: true });
+  }
+}
+
+function refreshThumb(source, dir, file) {
+  const prefix = `${source}/${dir}/${file}@`;
   for (const key of [...thumbCache.keys()]) if (key.startsWith(prefix)) thumbCache.delete(key);
-  const el = dir === gallery.active && gallery.els.get(file);
+  const el = source === gallery.source && dir === gallery.active && gallery.els.get(file);
   if (!el) return;
   el.classList.remove("ready", "broken");
   thumbObserver.observe(el); // видима плитка одразу потрапить у чергу і перемалюється
 }
 
-function editorQuarter(delta) {
-  if (!editor.img) return;
-  editor.quarter = (editor.quarter + delta + 4) % 4;
-  editorAutoCrop();
-  editorLayout();
+// ---------- велике вікно редактора: СКМ по плитці, збереження при закритті
+const modalEditor = new ImageEditor($("#editor"));
+let modalOpen = false;
+
+async function editorOpen(file, dir = gallery.active) {
+  if (busy || modalOpen) return;
+  await dockFlush();
+  modalOpen = true;
+  $("#editor").hidden = false;
+  const ok = await modalEditor.load(gallery.source, dir, file);
+  if (!ok && modalOpen && modalEditor.file === file) editorClose(false);
 }
 
-function editorSetAngleInputs(v) {
-  $("#editorAngle").value = v;
-  $("#editorAngleNum").value = v;
-}
-
-function editorSetAngle(v) {
-  v = Math.max(-45, Math.min(45, Number(v) || 0));
-  editor.angle = Math.round(v * 10) / 10;
-  if (!editor.img) return;
-  editorAutoCrop();
-  editorLayout();
-}
-
-function editorReset() {
-  if (!editor.img) return;
-  Object.assign(editor, { quarter: 0, angle: 0, crop: [0, 0, 1, 1] });
-  editorSetAngleInputs(0);
-  editorLayout();
-}
-
-$("#editorAngle").addEventListener("input", (e) => {
-  $("#editorAngleNum").value = e.target.value;
-  editorSetAngle(e.target.value);
-});
-$("#editorAngle").addEventListener("dblclick", () => {
-  editorSetAngleInputs(0);
-  editorSetAngle(0);
-});
-$("#editorAngleNum").addEventListener("input", (e) => {
-  $("#editorAngle").value = e.target.value;
-  editorSetAngle(e.target.value);
-});
-
-// Перетягування: ручки — краї/кути, всередині рамки — зсув, поза рамкою — нова рамка.
-let cropDrag = null;
-
-editorStage.addEventListener("pointerdown", (e) => {
-  if (e.button !== 0 || !editor.img || editor.saving) return;
-  const v = editor.view;
-  const mode = e.target.dataset.h || (e.target === editorCropEl ? "move" : "new");
-  const px = (e.clientX - editorStage.getBoundingClientRect().left - v.left) / v.w;
-  const py = (e.clientY - editorStage.getBoundingClientRect().top - v.top) / v.h;
-  cropDrag = { mode, sx: e.clientX, sy: e.clientY, start: [...editor.crop],
-    ax: Math.max(0, Math.min(1, px)), ay: Math.max(0, Math.min(1, py)) };
-  editorStage.setPointerCapture(e.pointerId);
-  e.preventDefault();
-});
-
-editorStage.addEventListener("pointermove", (e) => {
-  if (!cropDrag) return;
-  const v = editor.view;
-  const dx = (e.clientX - cropDrag.sx) / v.w, dy = (e.clientY - cropDrag.sy) / v.h;
-  const minW = 16 / v.w, minH = 16 / v.h;
-  const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
-  let [x, y, w, h] = cropDrag.start;
-  let r = x + w, b = y + h;
-  const m = cropDrag.mode;
-
-  if (m === "move") {
-    x = clamp(x + dx, 0, 1 - w);
-    y = clamp(y + dy, 0, 1 - h);
-    editor.crop = [x, y, w, h];
-  } else if (m === "new") {
-    const cx = clamp(cropDrag.ax + dx, 0, 1), cy = clamp(cropDrag.ay + dy, 0, 1);
-    editor.crop = [Math.min(cropDrag.ax, cx), Math.min(cropDrag.ay, cy),
-      Math.abs(cx - cropDrag.ax), Math.abs(cy - cropDrag.ay)];
-  } else {
-    if (m.includes("w")) x = clamp(x + dx, 0, r - minW);
-    if (m.includes("e")) r = clamp(r + dx, x + minW, 1);
-    if (m.includes("n")) y = clamp(y + dy, 0, b - minH);
-    if (m.includes("s")) b = clamp(b + dy, y + minH, 1);
-    editor.crop = [x, y, r - x, b - y];
+async function editorClose(save) {
+  if (!modalOpen || modalEditor.saving) return;
+  if (save && modalEditor.dirty()) {
+    const { source, dir, file } = modalEditor;
+    const res = await modalEditor.save();
+    if (!res.ok) return toast(res.error, "err"); // правки не губимо — редактор лишається відкритим
+    toast(res.message);
+    afterImageSaved(source, dir, file, res);
   }
-  editorPaintCrop();
-});
-
-function endCropDrag() {
-  if (!cropDrag) return;
-  const [, , w, h] = editor.crop;
-  const v = editor.view;
-  if (cropDrag.mode === "new" && (w * v.w < 16 || h * v.h < 16)) {
-    editor.crop = cropDrag.start; // випадковий клік — рамку не чіпаємо
-    editorPaintCrop();
-  }
-  cropDrag = null;
+  modalOpen = false;
+  modalEditor.clear();
+  $("#editor").hidden = true;
 }
-editorStage.addEventListener("pointerup", endCropDrag);
-editorStage.addEventListener("pointercancel", endCropDrag);
 
 // Клік по фону закриває (зі збереженням), але лише якщо і натиснули, і відпустили на фоні.
 let editorBackdropDown = false;
@@ -826,12 +869,10 @@ $("#editor").addEventListener("click", (e) => {
 });
 
 document.addEventListener("keydown", (e) => {
-  if (!editor.open) return;
+  if (!modalOpen) return;
   if (e.key === "Escape") editorClose(true);
   else if (e.key === "Enter" && !e.target.closest("button")) editorClose(true);
 });
-
-window.addEventListener("resize", () => editor.open && editorLayout());
 
 // СКМ: mousedown гасимо, щоб не вмикався автоскрол колесиком.
 thumbsBox.addEventListener("mousedown", (e) => {
@@ -846,6 +887,94 @@ thumbsBox.addEventListener("auxclick", (e) => {
   }
 });
 
+// ---------- панель праворуч: фото під курсором, автозбереження через 0,5 с після зміни
+const DOCK_SAVE_DELAY = 500;
+const DOCK_HOVER_DELAY = 180;   // щоб курсор, який пролітає над плитками до панелі, не перемикав фото
+const dock = new ImageEditor($("#dock"), { pad: 18, onChange: dockSchedule });
+let dockTimer = null;
+let dockSaving = null;
+let hoverTimer = null;
+
+function dockStatus(text, kind = "") {
+  const el = $("#dockStatus");
+  el.textContent = text;
+  el.className = "dock-status push " + kind;
+}
+
+function dockSchedule() {
+  clearTimeout(dockTimer);
+  dockTimer = null;
+  if (!dock.dirty()) return dockStatus("");
+  dockStatus("Є зміни…", "pending");
+  dockTimer = setTimeout(dockFlush, DOCK_SAVE_DELAY);
+}
+
+// Зберігає відкладені зміни одразу; завершується, коли файл записано.
+async function dockFlush() {
+  clearTimeout(dockTimer);
+  dockTimer = null;
+  if (dockSaving) return dockSaving;
+  if (!dock.dirty() || dock.drag) return;
+  dockSaving = (async () => {
+    const { source, dir, file } = dock;
+    dockStatus("Збереження…", "pending");
+    const res = await dock.save();
+    if (!res.ok) {
+      dockStatus("Помилка", "err");
+      return toast(res.error, "err");
+    }
+    dockStatus("Збережено", "ok");
+    await afterImageSaved(source, dir, file, res);
+  })();
+  try {
+    await dockSaving;
+  } finally {
+    dockSaving = null;
+  }
+}
+
+async function dockShow(file) {
+  const source = gallery.source, dir = gallery.active;
+  if (dock.drag || (dock.source === source && dock.dir === dir && dock.file === file)) return;
+  await dockFlush();
+  if (dock.source === source && dock.dir === dir && dock.file === file) return;
+  dockStatus("");
+  dock.load(source, dir, file);
+}
+
+async function dockUndo() {
+  if (!dock.file || dock.saving || dockSaving) return;
+  if (dock.dirty()) {
+    // ще не збережено — просто скидаємо правки
+    clearTimeout(dockTimer);
+    dockTimer = null;
+    Object.assign(dock, { quarter: 0, angle: 0, crop: [0, 0, 1, 1] });
+    dock.setAngleInputs(0);
+    dock.layout();
+    return dockStatus("");
+  }
+  const { source, dir, file } = dock;
+  const res = await eel.editor_undo(source, dir, file)();
+  if (!res.ok) return toast(res.error, "err");
+  dockStatus("Відмінено", "ok");
+  await afterImageSaved(source, dir, file, res);
+}
+
+thumbsBox.addEventListener("mouseover", (e) => {
+  const el = e.target.closest(".thumb");
+  clearTimeout(hoverTimer);
+  if (el) hoverTimer = setTimeout(() => el.isConnected && dockShow(el.dataset.file), DOCK_HOVER_DELAY);
+});
+thumbsBox.addEventListener("mouseleave", () => clearTimeout(hoverTimer));
+
+document.addEventListener("keydown", (e) => {
+  if (modalOpen || busy || !$("#modal").hidden) return;
+  if (!(e.ctrlKey && (e.key === "z" || e.key === "я" || e.code === "KeyZ"))) return;
+  if (e.target.closest && e.target.closest("input, select, textarea")) return;
+  e.preventDefault();
+  dockUndo();
+});
+
 // ---------- керування
 $("#gallerySrc").addEventListener("change", (e) => {
   e.target.blur(); // щоб стрілки гортали папки, а не селектор
@@ -853,7 +982,7 @@ $("#gallerySrc").addEventListener("change", (e) => {
 });
 
 document.addEventListener("keydown", (e) => {
-  if (busy || !$("#modal").hidden || editor.open || e.altKey || e.ctrlKey) return;
+  if (busy || !$("#modal").hidden || modalOpen || e.altKey || e.ctrlKey) return;
   if (e.target.closest && e.target.closest("input, select, textarea")) return;
   const moves = { ArrowLeft: -1, ArrowRight: 1, Home: -Infinity, End: Infinity };
   if (!(e.key in moves) || !gallery.dirs.length) return;
@@ -864,6 +993,7 @@ document.addEventListener("keydown", (e) => {
 async function galleryApply() {
   if (busy) return;
   if (!gallery.selection.size) return toast("Нічого не вибрано", "err");
+  await dockFlush(); // недозбережені правки — до перенесення файлів
   const payload = {};
   gallery.selection.forEach((s, dir) => (payload[dir] = { main: s.main, extra: [...s.extra] }));
 
@@ -872,6 +1002,9 @@ async function galleryApply() {
 
   // Перенесені файли знімаємо з вибору, невдалі лишаються виділеними.
   const failed = new Set(res.failed);
+  const moved = (dir, f) => payload[dir] && (payload[dir].main === f || payload[dir].extra.includes(f)) &&
+    !failed.has(`${dir}/${f}`);
+  if (dock.source === gallery.source && moved(dock.dir, dock.file)) dock.clear("Фото перенесено");
   gallery.selection.forEach((s, dir) => {
     if (s.main && !failed.has(`${dir}/${s.main}`)) s.main = null;
     s.extra.forEach((f) => !failed.has(`${dir}/${f}`) && s.extra.delete(f));

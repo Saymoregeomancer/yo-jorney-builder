@@ -1,6 +1,8 @@
+import atexit
 import base64
 import functools
 import io
+import itertools
 import json
 import math
 import os
@@ -8,6 +10,7 @@ import random
 import threading
 import shutil
 import sys
+import tempfile
 import traceback
 import zipfile
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -747,7 +750,19 @@ def gallery_images(source, name):
     gallery_state["source"], gallery_state["active"] = source, name
     files = [os.path.basename(p) for p in list_images(folder)]
     files.sort(key=str.lower)
-    return {"files": files}
+    return {"files": files, "sizes": {f: _image_size(os.path.join(folder, f)) for f in files}}
+
+
+def _image_size(path):
+    """[ширина, висота] з урахуванням EXIF-орієнтації; читає лише заголовок файлу."""
+    try:
+        with Image.open(path) as im:
+            w, h = im.size
+            if im.getexif().get(0x0112) in (5, 6, 7, 8):
+                w, h = h, w
+            return [w, h]
+    except Exception:
+        return None
 
 
 def _render_thumb(path, box):
@@ -885,6 +900,7 @@ def editor_save(source, name, file, quarter, angle, crop):
     elif fmt == "WEBP":
         info.update(quality=95, method=4)
 
+    _undo_push(path)
     tmp = path + ".tmp"
     try:
         im.save(tmp, fmt, **info)
@@ -893,7 +909,41 @@ def editor_save(source, name, file, quarter, angle, crop):
         if os.path.exists(tmp):
             os.unlink(tmp)
     return {"message": f"Збережено: {os.path.basename(path)} ({im.width}×{im.height})",
-            "width": im.width, "height": im.height}
+            "width": im.width, "height": im.height, "undo": len(_undo_stack.get(path, ()))}
+
+
+# Попередні версії перезаписаних файлів (на час роботи програми) — для «Відмінити».
+_UNDO_MAX = 20
+_undo_dir = None
+_undo_stack = {}                        # шлях -> [копії, від старої до нової]
+_undo_seq = itertools.count()
+
+
+def _undo_push(path):
+    global _undo_dir
+    if _undo_dir is None:
+        _undo_dir = tempfile.mkdtemp(prefix="yjb_undo_")
+        atexit.register(shutil.rmtree, _undo_dir, True)
+    stack = _undo_stack.setdefault(path, [])
+    copy = os.path.join(_undo_dir, f"{next(_undo_seq)}{Path(path).suffix}")
+    shutil.copy2(path, copy)
+    stack.append(copy)
+    if len(stack) > _UNDO_MAX:
+        os.unlink(stack.pop(0))
+
+
+@eel.expose
+@operation
+def editor_undo(source, name, file):
+    """Повертає попередню версію файлу, перезаписаного редактором."""
+    path = _gallery_file(source, name, file)
+    stack = _undo_stack.get(path)
+    if not stack:
+        raise UserError("Немає що відміняти.")
+    os.replace(stack.pop(), path)
+    size = _image_size(path) or [0, 0]
+    return {"message": f"Відмінено: {os.path.basename(path)}", "undo": len(stack),
+            "width": size[0], "height": size[1]}
 
 
 @eel.expose

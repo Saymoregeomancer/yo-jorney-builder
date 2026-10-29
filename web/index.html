@@ -346,6 +346,44 @@
           </div>
         </section>
       </div>
+
+      <!-- ============ Четверта колонка: перегляд і редагування ============ -->
+      <div class="column dock-col">
+        <section class="card dock-card" id="dock">
+          <div class="card-head">
+            <h2>Редагування</h2>
+            <span class="hint" data-tip="Наведіть на фото у «Відбір фото» — воно відкриється тут. Обрізка (рамка), нахил і поворот зберігаються автоматично поверх оригіналу через 0,5 с після останньої зміни. «Відмінити» (Ctrl+Z) повертає попередню версію файлу, доки програма відкрита.">?</span>
+            <span class="dock-status push" id="dockStatus"></span>
+          </div>
+          <div class="dock-head">
+            <b data-r="name">—</b>
+            <span class="editor-size" data-r="size"></span>
+          </div>
+          <div class="editor-stage" data-r="stage">
+            <canvas data-r="canvas"></canvas>
+            <div class="crop" data-r="crop" hidden>
+              <i data-h="n"></i><i data-h="s"></i><i data-h="e"></i><i data-h="w"></i>
+              <i data-h="nw"></i><i data-h="ne"></i><i data-h="sw"></i><i data-h="se"></i>
+            </div>
+            <div class="editor-loading" data-r="loading">Наведіть на фото в галереї</div>
+          </div>
+          <div class="editor-tools">
+            <button class="small-btn" title="Повернути на 90° проти годинникової" onclick="dock.quarterTurn(-1)">⟲</button>
+            <button class="small-btn" title="Повернути на 90° за годинниковою" onclick="dock.quarterTurn(1)">⟳</button>
+            <label class="editor-angle grow">
+              <span>Нахил</span>
+              <input type="range" data-r="angle" min="-45" max="45" step="0.1" value="0" />
+              <input type="number" data-r="angleNum" min="-45" max="45" step="0.1" value="0" />
+              <span>°</span>
+            </label>
+          </div>
+          <div class="editor-tools">
+            <button class="ghost" title="Відкрити у великому вікні (або СКМ по плитці)" onclick="dock.file && editorOpen(dock.file, dock.dir)">На весь екран</button>
+            <span class="spacer"></span>
+            <button class="ghost" title="Повернути попередню версію файлу (Ctrl+Z)" onclick="dockUndo()">↶ Відмінити</button>
+          </div>
+        </section>
+      </div>
     </main>
 
     <footer class="statusbar">
@@ -377,28 +415,28 @@
     <div class="modal-backdrop" id="editor" hidden>
       <div class="editor">
         <div class="editor-head">
-          <b id="editorName"></b>
-          <span class="editor-size" id="editorSize"></span>
+          <b data-r="name"></b>
+          <span class="editor-size" data-r="size"></span>
           <button class="icon-only" title="Зберегти і закрити (Esc)" onclick="editorClose(true)">✕</button>
         </div>
-        <div class="editor-stage" id="editorStage">
-          <canvas id="editorCanvas"></canvas>
-          <div class="crop" id="editorCrop" hidden>
+        <div class="editor-stage" data-r="stage">
+          <canvas data-r="canvas"></canvas>
+          <div class="crop" data-r="crop" hidden>
             <i data-h="n"></i><i data-h="s"></i><i data-h="e"></i><i data-h="w"></i>
             <i data-h="nw"></i><i data-h="ne"></i><i data-h="sw"></i><i data-h="se"></i>
           </div>
-          <div class="editor-loading" id="editorLoading">Завантаження…</div>
+          <div class="editor-loading" data-r="loading">Завантаження…</div>
         </div>
         <div class="editor-tools">
-          <button class="small-btn" title="Повернути на 90° проти годинникової" onclick="editorQuarter(-1)">⟲</button>
-          <button class="small-btn" title="Повернути на 90° за годинниковою" onclick="editorQuarter(1)">⟳</button>
+          <button class="small-btn" title="Повернути на 90° проти годинникової" onclick="modalEditor.quarterTurn(-1)">⟲</button>
+          <button class="small-btn" title="Повернути на 90° за годинниковою" onclick="modalEditor.quarterTurn(1)">⟳</button>
           <label class="editor-angle">
             <span>Нахил</span>
-            <input type="range" id="editorAngle" min="-45" max="45" step="0.1" value="0" />
-            <input type="number" id="editorAngleNum" min="-45" max="45" step="0.1" value="0" />
+            <input type="range" data-r="angle" min="-45" max="45" step="0.1" value="0" />
+            <input type="number" data-r="angleNum" min="-45" max="45" step="0.1" value="0" />
             <span>°</span>
           </label>
-          <button class="ghost" title="Скинути нахил, поворот і обрізку" onclick="editorReset()">Скинути</button>
+          <button class="ghost" title="Скинути нахил, поворот і обрізку" onclick="modalEditor.reset()">Скинути</button>
           <span class="spacer"></span>
           <button class="ghost" title="Закрити без збереження" onclick="editorClose(false)">Скасувати</button>
           <button class="accent" title="Зберегти поверх оригіналу (Enter)" onclick="editorClose(true)">Зберегти</button>
@@ -407,7 +445,6 @@
     </div>
 
     <div class="floating-tip" id="floatingTip" role="tooltip"></div>
-    <div class="preview-pop" id="previewPop"><img id="previewImg" alt="" /><span id="previewName"></span></div>
 
     <script src="app.js"></script>
   </body>

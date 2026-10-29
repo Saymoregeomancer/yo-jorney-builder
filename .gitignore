@@ -24,3 +24,4 @@ _backups/
 *.txt
 !requirements.txt
 810х853_2.jpg
+_backup/
